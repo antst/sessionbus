@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,10 +13,11 @@ import (
 	"github.com/antst/sessionbus/bus/internal/daemon"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestSDKCallerReportsRealDaemonEOF(t *testing.T) {
-	socket := shortSocket(t)
+	socket := filepath.Join(testsocket.Directory(t), "sessionbus.sock")
 	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(filepath.Dir(socket), "sessions")})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestSDKCallerReportsRealDaemonEOF(t *testing.T) {
 }
 
 func TestSDKPeerDaemonRehelloRules(t *testing.T) {
-	socket := shortSocket(t)
+	socket := filepath.Join(testsocket.Directory(t), "sessionbus.sock")
 	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(filepath.Dir(socket), "sessions")})
 	if err != nil {
 		t.Fatal(err)
@@ -108,14 +108,4 @@ func connectPeer(t *testing.T, socket, id string, deliver sessionkit.DeliverFunc
 		}
 	})
 	return peer
-}
-
-func shortSocket(t *testing.T) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "sb-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return filepath.Join(directory, "sessionbus.sock")
 }

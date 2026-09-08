@@ -25,6 +25,7 @@ import (
 	"github.com/antst/sessionbus/bus/internal/structuredprocess"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestMain(m *testing.M) {
@@ -412,7 +413,7 @@ func TestTableRejectsUnknownColumnsAndDuplicateNames(t *testing.T) {
 }
 
 func TestProductConfigRejectsDuplicatesAndOmitsEmptyDiscovery(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	config := Config{SocketPath: filepath.Join(directory, "duplicate.sock"), TablePath: filepath.Join(directory, "sessions.json"), Products: []string{"tool", "tool"}}
 	if _, err := Start(config); err == nil || err.Error() != "duplicate advertised product" {
 		t.Fatalf("duplicate products = %v", err)
@@ -430,7 +431,7 @@ func TestProductConfigRejectsDuplicatesAndOmitsEmptyDiscovery(t *testing.T) {
 }
 
 func TestDaemonCloseEndsRawAndActiveSpawnConnections(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	installFixture(t, directory, "no-hello-worker")
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ready := filepath.Join(directory, "ready")
@@ -603,7 +604,7 @@ func TestWorkerHelloIsSingleUseAndUncommitted(t *testing.T) {
 }
 
 func TestSpawnRunCloseResumeForgetAndRestart(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	installFixture(t, directory, "fixture-worker")
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("OPEN_LOG", filepath.Join(directory, "open.log"))
@@ -1024,20 +1025,12 @@ func TestMessageSendReturnsOneOrderedReceiptPerResolvedLabel(t *testing.T) {
 
 func startDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	socket := filepath.Join(directory, "sessionbus.sock")
 	d, err := Start(Config{SocketPath: socket, TablePath: filepath.Join(directory, "sessions.json")})
 	must(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d, socket
-}
-
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "sb-")
-	must(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return directory
 }
 
 func installFixture(t *testing.T, directory, name string) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/antst/sessionbus/bus/internal/federation"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestFederatedAdmissionKeepsRunInterruptOrder(t *testing.T) {
@@ -55,7 +56,7 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 	t.Cleanup(hub.Close)
 	start := func(host string) (*Daemon, string) {
 		directory := t.TempDir()
-		socket := filepath.Join(shortTempDir(t), host+".sock")
+		socket := filepath.Join(testsocket.Directory(t), host+".sock")
 		d, startErr := Start(Config{SocketPath: socket, TablePath: filepath.Join(directory, "rows"), Host: host, Products: []string{host + "-product"}, HubAddress: listener.Addr().String(), HubSecret: secrets[host]})
 		must(t, startErr)
 		t.Cleanup(func() { _ = d.Close() })

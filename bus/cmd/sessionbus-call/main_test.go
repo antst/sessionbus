@@ -13,10 +13,11 @@ import (
 
 	"github.com/antst/sessionbus/bus/internal/daemon"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestOneShotResultAndError(t *testing.T) {
-	directory := t.TempDir()
+	directory := testsocket.Directory(t)
 	socket := filepath.Join(directory, "sessionbus.sock")
 	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(directory, "sessions")})
 	if err != nil {
@@ -62,7 +63,7 @@ func TestUsage(t *testing.T) {
 }
 
 func TestSchemaErrorNamesPathAndConstraint(t *testing.T) {
-	directory := t.TempDir()
+	directory := testsocket.Directory(t)
 	socket := filepath.Join(directory, "sessionbus.sock")
 	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(directory, "sessions")})
 	if err != nil {
@@ -84,7 +85,7 @@ func TestSchemaErrorNamesPathAndConstraint(t *testing.T) {
 }
 
 func TestTurnRunWaitsForTerminal(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "sessionbus.sock")
+	socket := filepath.Join(testsocket.Directory(t), "sessionbus.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
