@@ -89,7 +89,7 @@ class Worker {
     try { await this.connection.result(request, {}); } catch { this.shutdown(); }
   }
   async _deliver(request, run) {
-    let receipt; try { receipt = await this.callbacks.deliver(this.controller.signal, request.params, undefined, run); } catch (error) { receipt = { disposition: "rejected", reason: clean(error) }; }
+    let receipt; try { receipt = await this.callbacks.deliver(this.controller.signal, request.params, undefined, run); } catch (error) { if (error instanceof ProtocolError && error.code === -32603) { await this._replyError(request, error.code, error.data); return; } receipt = { disposition: "rejected", reason: clean(error) }; }
     try { await this.connection.result(request, receipt); } catch { this.shutdown(); }
   }
   async _close(request, run, interrupt) {
@@ -122,6 +122,7 @@ class Peer {
   async _change(update, replacement, signal) {
     if (this.terminal) throw new Error("superseded");
     const object = update && typeof update === "object" && !Array.isArray(update), desired = replacement ? update : { ...this.identity, name: update?.name, info: update?.info };
+    if (!replacement && desired.name === undefined) delete desired.name;
     if (!object || !replacement && (Object.keys(update).length !== 2 || !Object.hasOwn(update, "name") || !Object.hasOwn(update, "info")) || !validate("SessionHelloRequest", { protocol: 1, ...desired }) || replacement && update.session_id === this.identity.session_id) throw new Error(`invalid ${replacement ? "replace" : "rehello"} identity`);
     const next = snapshot(desired);
     if (!replacement && isDeepStrictEqual(next, this.identity)) return;
@@ -152,7 +153,7 @@ class Peer {
   _failHello(error, connection) { if (!(error instanceof ProtocolError) || error.code !== -32602) return false; this.terminal = true; this.error = error; this.wire = null; this.connection = null; this.identityController?.abort(error); this.identityController = null; this.admitted = null; this.caller.disconnected(); connection.close(); this.finish(); return true; }
   _handle(request, connection) {
     if (request.method === "session.superseded") { this.terminal = true; this.error = new ProtocolError({ code: -32012, message: "superseded" }); this.connection = null; this.caller.disconnected(); void connection.result(request, {}).finally(() => { this.identityController?.abort(this.error); connection.close(); this.finish(); }); return; }
-    if (request.method === "message.deliver") { const current = this.connection === connection && this.admitted && this.identityController && !this.identityController.signal.aborted; const admission = current ? { identity: snapshot(this.admitted), signal: this.identityController.signal } : null; void Promise.resolve().then(() => admission ? this.deliver(admission.signal, request.params, admission.identity) : { disposition: "rejected", reason: "closing" }).then((result) => connection.result(request, result), (error) => connection.result(request, { disposition: "rejected", reason: clean(error) })).catch(() => connection.close()); }
+    if (request.method === "message.deliver") { const current = this.connection === connection && this.admitted && this.identityController && !this.identityController.signal.aborted; const admission = current ? { identity: snapshot(this.admitted), signal: this.identityController.signal } : null; void Promise.resolve().then(() => admission ? this.deliver(admission.signal, request.params, admission.identity) : { disposition: "rejected", reason: "closing" }).then((result) => connection.result(request, result), (error) => error instanceof ProtocolError && error.code === -32603 ? connection.error(request, error.code, error.data) : connection.result(request, { disposition: "rejected", reason: clean(error) })).catch(() => connection.close()); }
   }
 }
 

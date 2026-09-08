@@ -31,7 +31,12 @@ func validNamePart(value string) bool {
 	})
 }
 
-func qualify(value, host string) string { return value + "@" + host }
+func qualify(value, host string) string {
+	if value == "" {
+		return ""
+	}
+	return value + "@" + host
+}
 
 func unqualify(value string) string {
 	if index := strings.LastIndexByte(value, '@'); index >= 0 {

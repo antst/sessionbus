@@ -73,8 +73,8 @@ for both disagreement cases; the token alone leaves one fact and zero
 consistency checks. Per-spawn tokens are single-use and expiring, so an
 ordinary human shell never contains one.
 
-Every session has one canonical ID `id@host` and one canonical name
-`name@host`; every output uses those forms on the session's own daemon and on
+Every session has one canonical ID `id@host` and, when named, one canonical
+name `name@host`; every output uses those forms on the session's own daemon and on
 every federated host. The product owns the ID part because it owns the session
 primitive that can address it; the daemon mints no session IDs. A caller may
 use a bare ID or bare name as shorthand for its own daemon's host.
@@ -127,9 +127,9 @@ There are eleven methods.
 #### `session.hello`
 
 The session sends `session.hello` first. The request is one closed union. A peer
-supplies its product-native bare `session_id` and an unqualified `name` part, plus
+supplies its product-native bare `session_id` and an optional unqualified `name` part, plus
 `groups` and `info`; the name part may itself contain `@` or `/`. The daemon
-qualifies both parts with its effective host before installing the peer. A worker instead supplies a
+qualifies the ID and any present name with its effective host before installing the peer. A worker instead supplies a
 one-use `launch_token`, its supported non-identity open fields, its ordered
 extra-argument descriptions, and optionally the product version. The branches are mutually
 exclusive: a request with both discriminants or neither is invalid. A worker
@@ -137,6 +137,17 @@ sends hello only after its product and plugin are app-ready, so hello success is
 the sole readiness fact. A peer ID matching a durable lane row is invalid. A
 worker's product must equal the product recorded by its launch-token
 reservation. The result is `{}`.
+
+A peer publishes its authoritative native session ID, launch groups and product information once known. The native name is optional. Omit name when the product has not reported one; an empty string or generated stand-in is not a name. An unnamed peer is live and addressable by its session ID and normal groups. Name lookup does not match unnamed peers. A subsequent native title report updates the same peer identity using the existing rehello operation. Absence of a title field on an unrelated product event is not a title-removal assertion.
+
+Name absence survives summaries, delivery-source metadata, and federation; it
+is never qualified into `@host`. Go `PeerIdentity.Name` uses the empty string
+in memory for absence and omits it on the wire. Go `Rehello(ctx, "", info)`
+and JavaScript `rehello(signal, undefined, info)` explicitly remove a name.
+Every rehello is a complete identity assertion: an omitted name means no name
+now. The adapter sends that assertion only when the product reports removal.
+An explicit empty string on the wire is invalid. Lane names remain required
+and follow the existing daemon naming and uniqueness contract.
 
 A live peer may send another hello. With the same `session_id`, it updates the
 product-owned name and `info` in place; `groups` must equal the original
@@ -169,7 +180,7 @@ race is bounded and cannot flap indefinitely.
 
 A connected session sends `session.list` with an optional `session_id` filter.
 The result contains the matching visible sessions, or all visible sessions when
-the filter is absent. Each item reports canonical `id@host` and `name@host`, whether its one
+the filter is absent. Each item reports canonical `id@host` and, when named, `name@host`, whether its one
 connection is open, and whether one `turn.run` is outstanding. The host is already carried by both canonical identities, so no
 separate summary host field exists. This single method
 replaces peer listing, lane listing, and lane status. Its optional `hosts` array advertises product names by host. Whenever
@@ -201,14 +212,34 @@ label order after deduplication. There is no multicast timeout.
 #### `message.deliver`
 
 The daemon sends `message.deliver` to the target session with the message ID,
-authoritative canonical `id@host` and `name@host` source identity, and body. Every product implements delivery while
-idle and while a turn is running. Its result is exactly one closed receipt:
-`injected`, `queued_for_next_turn`, or `rejected` with a nonempty reason. A
-product may report `queued_for_next_turn` when its native surface cannot append
-without starting a turn; any such queue is product- or wrapper-owned and
-invisible to the daemon and to this wire. An interactive peer may instead start
-a native turn on delivery and truthfully report `injected`; the bounded FIFO
-rule in Section 4 applies to lane wrappers only.
+authoritative canonical `id@host`, optional `name@host` source identity, and body.
+Every product implements delivery while idle and while a turn is running.
+Its result is exactly one closed receipt: `written`, `injected`,
+`queued_for_next_turn`, or `rejected` with a nonempty reason.
+
+> `written` means the integration completed one local transport write of the complete frame addressed to the native session captured for that delivery, using that session's product-owned carrier, with no explicit transport/native error observed before the result was emitted. It acknowledges only the local write. It does not assert that the native process parsed the frame, accepted its session ID, scheduled or retained the message, presented it, or consumed it. A native EOF without response bytes adds no acknowledgment. Absence of an observed rejection is not proof of acceptance.
+>
+> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` remains reserved for a demonstrated native staging/replay primitive for a later explicit run; a completed local write alone does not qualify. Evidence of a later run's consumption may prove that tested staging path; it does not turn a future run into a fact at receipt time. `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
+>
+> The Claude interactive integration returns `written` at that local completion boundary. It preserves the captured native session ID and frame contents across asynchronous work; a later identity report never retargets the frame. A native-adapter `rejected` result requires an observed native refusal or a failure before any native submission, with a reason that identifies that boundary. An uncertain write or post-submission transport loss must not be represented as a native refusal or proof of non-consumption.
+
+For every non-rejected sender receipt, `session_id` and `delivery_id` are
+required and `reason` is absent. For an uncertain submission, the native
+callback returns/throws the existing public `ProtocolError` with code `-32603`
+(`internal`) and a diagnostic string in `data` identifying that uncertainty.
+Both Peer and Worker kits preserve that RPC error instead of converting it to
+a native-adapter rejection. The daemon reports its existing `rejected/no_receipt`:
+no native receipt was obtained, and whether the product acted is unknown.
+A completed write followed by native EOF without response bytes may report
+`written`; EOF itself adds no acknowledgment. Partial or uncertain completion
+must use the error path, not `written`. Neither path retries or replays.
+
+BN01/BD01 require a coordinated upgrade: install the compatible daemon, both
+public kits, and all federated/caller validators before enabling unnamed peers
+or `written` callbacks. This amendment keeps protocol number 1; the closed old
+validators are incompatible. Package previews are pinned to the reviewed PR
+commit; a compatible published kit must get a new package version before
+consumer release. There is no negotiation or fallback to `injected`/`accepted`.
 
 #### `lane.describe`
 
@@ -306,12 +337,12 @@ was shortened to the wire limit.
 #### `turn.interrupt`
 
 Either a caller sends `turn.interrupt` to the daemon or the daemon forwards it
-to the addressed lane. The request carries only `session_id`; `{}` means the
-product accepted the interrupt request. An idle target returns the closed
-not-running error. There is no interrupt grace timer and no `timed_out` outcome:
-if the native run remains unresponsive, the caller closes the session.
-The worker kit coalesces interrupts: it invokes the native interrupt primitive
-at most once per run, and later interrupt requests return `{}`.
+to the addressed lane. The request carries only `session_id`.
+
+A successful turn.interrupt RPC records or coalesces the interrupt request for the outstanding run. Its empty result does not certify native acceptance or completion. The worker invokes the native primitive at most once for that run. Native callback errors remain the prescribed quoted diagnostic; only the native run terminal supplies the stopping outcome. Idle remains not_running.
+
+There is no interrupt grace timer and no `timed_out` outcome: if the native run
+remains unresponsive, the caller closes the session.
 
 #### `session.close`
 
@@ -976,7 +1007,7 @@ The admitted mapping is closed:
 | Explicit `message.send` | One request per remote input label; the destination resolves the label locally with carried groups and returns its ordinary delivery result. |
 | Group `message.send` | Capture `federation.hosts`; one host-specific group request per captured host plus the local leg; the origin merges receipts. |
 
-The hub validates that `from.session_id` and `from.name` belong to the
+The hub validates that `from.session_id` and any present `from.name` belong to the
 authenticated origin host, validates `from.product` and the complete group
 capture, derives exactly one destination from the nested public request, and
 routes once. It makes no name, group, row, product-installation, or placement
@@ -1308,7 +1339,7 @@ members. This is the complete product-facing contract:
 | `open(cancel, request)` | Create or resume from the typed request, apply its composed name as the product title where supported, and return the exact product session ID. |
 | `run(cancel, run, input)` | Start one native turn for the kit-owned `Run` token, observe it to a terminal result, and return that result. |
 | `interrupt(cancel, run)` | Ask the native turn identified by that same `Run` token to stop. |
-| `deliver(cancel, request)` | Receive the full closed `MessageDeliverRequest` `{message_id,from,body}`, inject now or queue for the next turn, and return the truthful closed receipt. |
+| `deliver(cancel, request)` | Receive the full closed `MessageDeliverRequest` `{message_id,from,body}` and return the truthful closed receipt at the demonstrated native boundary from Section 1 (`written`, `injected`, `queued_for_next_turn`, or `rejected`). |
 | `close(cancel)` | Stop accepting work, close native state, and release product resources. |
 
 These are primitives, not a daemon adapter interface. They live in the product
@@ -1347,7 +1378,7 @@ Callback failures map exactly once:
 | `open` | `spawn_failed` with `stderr_tail:[message]`; the daemon passes it through unchanged. |
 | `run` | Terminal `{outcome:"failed",result:message}`; a run callback never returns an RPC error. |
 | `interrupt` | `{}`; the callback message is one quoted line on worker stderr, and the run terminal remains the stopping truth. |
-| `deliver` | Rejected receipt with the callback message as `reason`. |
+| `deliver` | An explicit `ProtocolError` with code `-32603` preserves an uncertain-submission RPC failure; the daemon maps it to `rejected/no_receipt`, which makes no non-consumption claim. Other callback errors become rejected receipts with the callback message as `reason` and must denote observed refusal or failure before submission. |
 | `close` | `{}` followed by ordinary kit exit; the callback message is one quoted line on worker stderr. |
 
 In 0.5.0 both language kits read `SESSIONBUS_SOCKET`,
@@ -1921,7 +1952,7 @@ not a reason to move lines into a product integration.
 | C2 | Describe without open or residue; two-level spawn composes matching name/private-group paths, gives each lane only its parent and own private groups plus `extra_groups`, and proves explicit ancestor-group widening; all declared open fields and ordered arguments survive. Discovery advertises configured product names without gating an unlisted executable and a listed-but-missing name returns `unknown_product`; explicit `host` naming the other daemon in a two-daemon fixture describes and creates the row only there, while an unfederated host returns `unknown_host`. |
 | C3 | Local-kit start returns a local ID while one wire `turn.run` remains outstanding; status is running and bounded wait timeout does not cancel it. |
 | C4 | Wait returns the terminal, including exact result truncation metadata; abandoning the caller sink makes the kit report `result unavailable, lane resumable`, while the daemon drains and persists nothing. |
-| C5 | Send resolves ID/name/group, deduplicates, and returns dispositions `injected`, `queued_for_next_turn`, or `rejected`, including exact rejected reasons `ambiguous` and `no_receipt`; an invisible peer receives `unknown_session`. |
+| C5 | Send resolves ID/name/group, deduplicates, and returns dispositions `written`, `injected`, `queued_for_next_turn`, or `rejected`, including exact rejected reasons `ambiguous` and `no_receipt`; an invisible peer receives `unknown_session`. |
 | C6 | Concurrent interrupts coalesce to one worker interrupt and idle interrupt maps `not_running`. |
 | C7 | Explicit close during a run orders a terminal observed within the bound before the close response; the one 10-second `closeBound` covers request through reap, and expiry KILL invents no terminal or second wait. The row remains resumable unless `forget:true`. |
 | C8 | Peer EOF reconnects; a new connection with the same canonical ID supersedes the displaced identity terminally. Same-ID re-hello refreshes name/info with fixed groups. Different-ID re-hello atomically detaches the old reply sinks, fails its pending deliveries once, removes its private group, and installs the new identity/group before acknowledgement; requests admitted before the switch retain the old source. |
@@ -2000,7 +2031,7 @@ check.
 
 | Gate | Assertion |
 | --- | --- |
-| Identity | Every local and remote summary emits the same canonical `id@host` and `name@host`; no separate host field or receiving-side relabeling exists. A standalone daemon uses `local`, and a federated daemon requires a configured non-`local` unique host name. |
+| Identity | Every local and remote summary emits the same canonical `id@host` and optional `name@host`; no separate host field or receiving-side relabeling exists. A standalone daemon uses `local`, and a federated daemon requires a configured non-`local` unique host name. |
 | Visibility | The destination daemon resolves and filters its own current directory with the carried admitted groups. The origin and hub keep no remote row. |
 | Messaging | One canonical remote message is forwarded once, produces one receipt, and is never retried or duplicated after federation reconnect. Bare input selects the caller's own host; qualified input is split only at the last `@`. |
 | Control and creation | Canonical remote resume/run/interrupt/close and explicit-host spawn/describe travel exactly one hop as `{from:{session_id:id@host,name:name@host,product,private_group,groups},request}`; the TLS connection identifies the origin and the JSON-RPC ID correlates it. The destination enters the same local request dispatcher with that captured identity, rejects a non-local target, and never forwards again. Caller loss removes only the reply sink; transport loss returns `forward_lost` without retry. |

@@ -109,3 +109,51 @@ func connectPeer(t *testing.T, socket, id string, deliver sessionkit.DeliverFunc
 	})
 	return peer
 }
+
+func TestSDKWrittenAndUncertainDeliveryReceipts(t *testing.T) {
+	socket := filepath.Join(testsocket.Directory(t), "sessionbus.sock")
+	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(filepath.Dir(socket), "sessions")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	received := make(chan sessionkit.DeliveryRequest, 1)
+	sender := connectPeer(t, socket, "sender", func(context.Context, sessionkit.PeerIdentity, sessionkit.DeliveryRequest) (sessionkit.DeliveryReceipt, error) {
+		return sessionkit.DeliveryReceipt{Disposition: "injected"}, nil
+	})
+	connectPeer(t, socket, "target", func(_ context.Context, _ sessionkit.PeerIdentity, request sessionkit.DeliveryRequest) (sessionkit.DeliveryReceipt, error) {
+		received <- request
+		switch request.Body {
+		case "complete write", "native EOF after complete write":
+			return sessionkit.DeliveryReceipt{Disposition: "written"}, nil
+		case "pre-write failure", "observed native refusal":
+			return sessionkit.DeliveryReceipt{Disposition: "rejected", Reason: request.Body}, nil
+		default:
+			return sessionkit.DeliveryReceipt{}, &sessionkit.ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"submission uncertain"`)}
+		}
+	})
+	for _, body := range []string{"complete write", "native EOF after complete write", "pre-write failure", "observed native refusal", "partial write", "post-submission transport loss"} {
+		var result sessionkit.MessageSendResult
+		raw, callErr := sender.Call(context.Background(), "message.send", sessionkit.MessageSendRequest{Target: "target", Message: body})
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		if err = json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		receipt := result.Deliveries[0]
+		want, reason := "rejected", "no_receipt"
+		if body == "complete write" || body == "native EOF after complete write" {
+			want, reason = "written", ""
+		} else if body == "pre-write failure" || body == "observed native refusal" {
+			reason = body
+		}
+		if receipt.Disposition != want || receipt.Reason != reason || receipt.SessionID != "target@local" || receipt.DeliveryID == "" {
+			t.Fatalf("%s: %#v", body, receipt)
+		}
+		request := <-received
+		if request.MessageID != result.MessageID || request.From.SessionID != "sender@local" || request.Body != body {
+			t.Fatalf("captured delivery: %#v", request)
+		}
+	}
+}

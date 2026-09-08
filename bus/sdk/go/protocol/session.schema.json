@@ -36,7 +36,7 @@
           },
           "else": {
             "allOf": [
-              {"required": ["session_id", "name", "groups", "info"]},
+              {"required": ["session_id", "groups", "info"]},
               {"not": {"required": ["supported_open_fields"]}},
               {"not": {"required": ["extra_arguments"]}},
               {"not": {"required": ["version"]}}
@@ -78,7 +78,7 @@
     "SessionSummary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "kind", "product", "name", "groups", "connected", "running"],
+      "required": ["session_id", "kind", "product", "groups", "connected", "running"],
       "properties": {
         "session_id": {"type": "string", "minLength": 1, "maxLength": 161},
         "kind": {"enum": ["peer", "lane"]},
@@ -90,6 +90,7 @@
         "info": {"type": "object", "additionalProperties": true}
       },
       "allOf": [
+        {"if": {"properties": {"kind": {"const": "lane"}}}, "then": {"required": ["name"]}},
         {
           "if": {"properties": {"connected": {"const": false}}, "required": ["connected"]},
           "then": {"properties": {"running": {"const": false}}}
@@ -147,7 +148,7 @@
         "target": {"type": "string", "minLength": 1},
         "session_id": {"type": "string", "minLength": 1},
         "delivery_id": {"type": "string", "minLength": 1},
-        "disposition": {"enum": ["injected", "queued_for_next_turn", "rejected"]},
+        "disposition": {"enum": ["written", "injected", "queued_for_next_turn", "rejected"]},
         "reason": {"type": "string", "minLength": 1}
       },
       "allOf": [
@@ -186,7 +187,7 @@
     "DeliverySource": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "name", "product", "groups"],
+      "required": ["session_id", "product", "groups"],
       "properties": {
         "session_id": {"type": "string", "minLength": 1},
         "name": {"type": "string", "minLength": 1, "maxLength": 161, "pattern": "^[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S}\\p{Zs}]+$"},
@@ -199,7 +200,7 @@
       "additionalProperties": false,
       "required": ["disposition"],
       "properties": {
-        "disposition": {"enum": ["injected", "queued_for_next_turn", "rejected"]},
+        "disposition": {"enum": ["written", "injected", "queued_for_next_turn", "rejected"]},
         "reason": {"type": "string", "minLength": 1}
       },
       "allOf": [

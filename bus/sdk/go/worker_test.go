@@ -18,6 +18,8 @@ import (
 )
 
 type fakeProduct struct {
+	deliveryResult          *DeliveryReceipt
+	deliveryError           error
 	worker                  *Worker
 	started                 chan *Run
 	release, interrupted    chan struct{}
@@ -96,6 +98,9 @@ func (p *fakeProduct) Interrupt(ctx context.Context, run *Run) error {
 }
 func (p *fakeProduct) Deliver(ctx context.Context, _ DeliveryRequest, run *Run) (DeliveryReceipt, error) {
 	atomic.AddInt32(&p.calls[4], 1)
+	if p.deliveryResult != nil {
+		return *p.deliveryResult, p.deliveryError
+	}
 	if p.deliverRun != nil {
 		p.deliverRun <- run
 		if p.deliverRelease != nil {
@@ -461,3 +466,41 @@ func check(t *testing.T, condition bool, format string, args ...any) {
 
 var delivery = DeliveryRequest{MessageID: "m", From: DeliverySource{SessionID: "peer@local", Name: "peer@local", Product: "peer", Groups: []string{}}, Body: "body"}
 var target = protocol.SessionTarget{SessionID: "product-session@local"}
+
+func TestWorkerWrittenAndUncertainSubmission(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		receipt DeliveryReceipt
+		err     error
+	}{
+		{"complete write", DeliveryReceipt{Disposition: "written"}, nil},
+		{"native EOF after complete write", DeliveryReceipt{Disposition: "written"}, nil},
+		{"pre-write failure", DeliveryReceipt{}, errors.New("pre-write failure")},
+		{"observed native refusal", DeliveryReceipt{Disposition: "rejected", Reason: "observed native refusal"}, nil},
+		{"partial write", DeliveryReceipt{}, &ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"partial write; submission uncertain"`)}},
+		{"post-submission transport loss", DeliveryReceipt{}, &ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"transport lost after submission; consumption unknown"`)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			product := &fakeProduct{deliveryResult: &test.receipt, deliveryError: test.err}
+			h := startHarness(t, product, true, true)
+			var receipt DeliveryReceipt
+			err := h.Call(context.Background(), "message.deliver", delivery, &receipt)
+			var failure *ProtocolError
+			if errors.As(test.err, &failure) {
+				var got *ProtocolError
+				if !errors.As(err, &got) || got.Code != protocol.Internal || string(got.Data) != string(failure.Data) || receipt.Disposition != "" {
+					t.Fatalf("uncertain submission: %#v, %v", receipt, err)
+				}
+			} else {
+				mustRPC(t, err)
+				want := test.receipt
+				if test.err != nil {
+					want = DeliveryReceipt{Disposition: "rejected", Reason: test.err.Error()}
+				}
+				if receipt != want {
+					t.Fatalf("receipt = %#v, want %#v", receipt, want)
+				}
+			}
+		})
+	}
+}

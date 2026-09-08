@@ -49,7 +49,7 @@ func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 }
 
 func (s *session) peerHello(frame protocol.Frame, hello *protocol.PeerHello) {
-	if s.identity != nil && !s.identity.peer || !validIDPart(hello.SessionID) || !validNamePart(hello.Name) || !validHost(hello.Product) {
+	if s.identity != nil && !s.identity.peer || !validIDPart(hello.SessionID) || hello.Name != "" && !validNamePart(hello.Name) || !validHost(hello.Product) {
 		s.reject(frame, protocol.InvalidHello)
 		return
 	}

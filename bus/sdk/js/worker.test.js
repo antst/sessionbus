@@ -302,3 +302,47 @@ async function peerLifetime() {
   await assert.rejects(peer.rehello(undefined, "too late", {}), /superseded/); assert.deepEqual(peer.identity, beforeTerminal); assert.equal(scheduled.length, 0);
   await assert.rejects(peer.replace({ ...beforeTerminal, session_id: "too-late" }), /superseded/); assert.deepEqual(peer.identity, beforeTerminal);
 }
+
+for (const mode of ["peer", "worker"]) test(`${mode} written and uncertain native submission`, async (t) => {
+  const admit = async (_signal, request) => {
+    if (["complete write", "native EOF after complete write"].includes(request.body)) return { disposition: "written" };
+    if (request.body === "pre-write failure") throw new Error(request.body);
+    if (request.body === "observed native refusal") return { disposition: "rejected", reason: request.body };
+    throw new ProtocolError({ code: -32603, message: "internal", data: `${request.body}; submission uncertain` });
+  };
+  let daemon;
+  if (mode === "worker") {
+    const product = new FakeProduct(); product.deliver = admit; ({ daemon } = await harness(t, product));
+  } else {
+    const endpoint = peerEndpoint(); daemon = endpoint.daemon;
+    const peer = connectPeer({ product: "native-product", session_id: "target", groups: [], info: {} }, admit, { SESSIONBUS_SOCKET: "/fixture/socket" }, { connect: () => endpoint.client, schedule: () => {} });
+    t.after(() => { peer.shutdown(); daemon.close(); });
+    const hello = await endpoint.next(); assert.equal(Object.hasOwn(hello.params, "name"), false);
+    await daemon.result(hello, {}); await peer.ready;
+  }
+  for (const body of ["complete write", "native EOF after complete write", "pre-write failure", "observed native refusal", "partial write", "post-submission transport loss"]) {
+    const result = daemon.call("message.deliver", { ...delivery, body });
+    if (["partial write", "post-submission transport loss"].includes(body)) await assert.rejects(result, (error) => error instanceof ProtocolError && error.code === -32603 && error.data === `${body}; submission uncertain`);
+    else assert.deepEqual(await result, ["complete write", "native EOF after complete write"].includes(body) ? { disposition: "written" } : { disposition: "rejected", reason: body });
+  }
+});
+
+test("unnamed peer first title, removal and written delivery retain captured identity", async (t) => {
+  const endpoint = peerEndpoint(), entered = deferred(), release = deferred();
+  const initial = { product: "native-product", session_id: "old", groups: ["shared"], info: {} };
+  const peer = connectPeer(initial, async (signal, request, identity) => { entered.resolve({ request: structuredClone(request), identity: structuredClone(identity), signal }); await release.promise; return { disposition: "written" }; }, { SESSIONBUS_SOCKET: "/fixture/socket" }, { connect: () => endpoint.client, schedule: () => {} });
+  t.after(() => { peer.shutdown(); endpoint.daemon.close(); });
+  await endpoint.daemon.result(await endpoint.next(), {}); await peer.ready;
+  await assert.rejects(peer.rehello(undefined, "", {}), /invalid rehello/);
+  for (const name of ["first title", undefined]) {
+    const changed = peer.rehello(undefined, name, {}), hello = await endpoint.next();
+    assert.equal(hello.params.session_id, initial.session_id); assert.equal(Object.hasOwn(hello.params, "name"), name !== undefined); assert.equal(hello.params.name, name);
+    await endpoint.daemon.result(hello, {}); await changed;
+  }
+  const request = { message_id: "captured", from: { session_id: "source@local", product: "native-product", groups: ["shared"] }, body: "complete frame" };
+  const delivering = endpoint.daemon.call("message.deliver", request), captured = await entered.promise;
+  const replacing = peer.replace({ ...initial, session_id: "new", name: "replacement" });
+  await endpoint.daemon.result(await endpoint.next(), {}); await replacing;
+  release.resolve(); assert.deepEqual(await delivering, { disposition: "written" });
+  assert.deepEqual(captured.identity, initial); assert.deepEqual(captured.request, request); assert.equal(captured.signal.aborted, true);
+});

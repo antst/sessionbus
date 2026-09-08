@@ -19,7 +19,7 @@ var errFrame = errors.New("invalid federation frame")
 
 type Caller struct {
 	SessionID    string   `json:"session_id"`
-	Name         string   `json:"name"`
+	Name         string   `json:"name,omitempty"`
 	Product      string   `json:"product"`
 	PrivateGroup string   `json:"private_group"`
 	Groups       []string `json:"groups"`

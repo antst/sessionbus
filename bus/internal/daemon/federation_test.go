@@ -3,7 +3,9 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/antst/sessionbus/bus/internal/federation"
+	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
@@ -124,6 +127,63 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 		t.Fatalf("remote child = %#v", listed)
 	}
 	must(t, sender.call("session.close", protocol.SessionCloseRequest{SessionID: spawned.SessionID, Forget: true}, &struct{}{}))
+
+	// Remove both native names, then exercise the same authenticated hub path.
+	must(t, sender.peer.Rehello(context.Background(), "", map[string]any{}))
+	must(t, receiver.peer.Rehello(context.Background(), "", map[string]any{}))
+	var rawList map[string]any
+	must(t, sender.call("session.list", protocol.SessionListRequest{}, &rawList))
+	for _, row := range rawList["sessions"].([]any) {
+		if _, present := row.(map[string]any)["name"]; present {
+			t.Fatalf("federated absent name: %#v", row)
+		}
+	}
+	for _, input := range []protocol.MessageSendRequest{{Target: "receiver-id@beta", Message: "unnamed direct"}, {Group: "team", Message: "unnamed group"}} {
+		must(t, sender.call("message.send", input, &sent))
+		if len(sent.Deliveries) != 1 || sent.Deliveries[0].SessionID != "receiver-id@beta" {
+			t.Fatalf("unnamed federation delivery: %#v", sent)
+		}
+		source := (<-receiver.deliveries).From
+		raw, marshalErr := json.Marshal(source)
+		must(t, marshalErr)
+		var fields map[string]any
+		must(t, json.Unmarshal(raw, &fields))
+		if _, present := fields["name"]; present || source.SessionID != "sender@alpha" {
+			t.Fatalf("unnamed federation source: %s", raw)
+		}
+	}
+	must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "receiver@beta", Message: "old name"}, &sent))
+	if sent.Deliveries[0].Reason != "unknown_session" {
+		t.Fatalf("removed remote name matched: %#v", sent)
+	}
+	t.Setenv("SESSIONBUS_SOCKET", betaSocket)
+	captured := make(chan sessionkit.DeliveryRequest, 1)
+	written, connectErr := sessionkit.ConnectPeer(sessionkit.PeerIdentity{Product: "fixture-client", SessionID: "written-id", Groups: []string{"team"}, Info: map[string]any{}}, func(_ context.Context, _ sessionkit.PeerIdentity, request sessionkit.DeliveryRequest) (sessionkit.DeliveryReceipt, error) {
+		captured <- request
+		if request.Body == "uncertain" {
+			return sessionkit.DeliveryReceipt{}, &sessionkit.ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"post-submission transport loss; consumption unknown"`)}
+		}
+		return sessionkit.DeliveryReceipt{Disposition: "written"}, nil
+	})
+	must(t, connectErr)
+	t.Cleanup(func() { written.Shutdown(); <-written.Closed() })
+	<-written.Ready()
+	for _, body := range []string{"written", "uncertain"} {
+		sent = protocol.MessageSendResult{}
+		must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "written-id@beta", Message: body}, &sent))
+		receipt := sent.Deliveries[0]
+		want, reason := "written", ""
+		if body == "uncertain" {
+			want, reason = "rejected", "no_receipt"
+		}
+		if receipt.Disposition != want || receipt.Reason != reason || receipt.SessionID != "written-id@beta" || receipt.DeliveryID == "" {
+			t.Fatalf("federated receipt: %#v", receipt)
+		}
+		request := <-captured
+		if request.From.SessionID != "sender@alpha" || request.From.Name != "" || request.MessageID != sent.MessageID || request.Body != body {
+			t.Fatalf("federated captured frame: %#v", request)
+		}
+	}
 }
 
 func TestForwardWaiterKeepsOriginalIdentityLifetime(t *testing.T) {

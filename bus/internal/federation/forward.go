@@ -3,6 +3,7 @@
 package federation
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"unicode"
@@ -18,6 +19,12 @@ func decodeForward(raw []byte, source string) (Forward, string, error) {
 	if protocol.DecodeJSON(raw, &value) != nil || !validCaller(value.From, source) || (value.Request.Method == "message.send") != (value.Request.MessageID != "") {
 		return Forward{}, "", errFrame
 	}
+	var fields struct {
+		From map[string]json.RawMessage `json:"from"`
+	}
+	if json.Unmarshal(raw, &fields) != nil || len(fields.From["name"]) != 0 && value.From.Name == "" {
+		return Forward{}, "", errFrame
+	}
 	host, err := targetHost(value.Request)
 	if err != nil || host == source {
 		return Forward{}, "", errFrame
@@ -26,7 +33,7 @@ func decodeForward(raw []byte, source string) (Forward, string, error) {
 }
 
 func validCaller(value Caller, host string) bool {
-	return ownedPart(value.SessionID, host, false) && ownedPart(value.Name, host, true) && validToken(value.Product) &&
+	return ownedPart(value.SessionID, host, false) && (value.Name == "" || ownedPart(value.Name, host, true)) && validToken(value.Product) &&
 		strings.HasPrefix(value.PrivateGroup, "session:") && slices.Contains(value.Groups, value.PrivateGroup) && uniqueStrings(value.Groups)
 }
 

@@ -210,6 +210,11 @@ func (w *Worker) interrupt(request *rpc.Request, run *Run, call bool) {
 
 func (w *Worker) deliver(ctx context.Context, request *rpc.Request, run *Run) {
 	receipt, err := w.product.Deliver(ctx, *request.Params.(*DeliveryRequest), run)
+	var failure *ProtocolError
+	if errors.As(err, &failure) && failure.Code == protocol.Internal {
+		w.reply(w.conn.Error(request, failure.Code, failure.Data))
+		return
+	}
 	if err != nil {
 		receipt = DeliveryReceipt{Disposition: "rejected", Reason: err.Error()}
 	}

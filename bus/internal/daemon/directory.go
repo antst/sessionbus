@@ -279,7 +279,7 @@ func (d *directory) resolveLocked(canonical string, groups []string) (*entry, bo
 	}
 	var found *entry
 	for _, item := range d.entries {
-		if item.row.Name == canonical && visibleTo(item, groups) {
+		if item.row.Name != "" && item.row.Name == canonical && visibleTo(item, groups) {
 			if found != nil {
 				return nil, true
 			}
