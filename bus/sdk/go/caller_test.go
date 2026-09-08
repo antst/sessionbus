@@ -14,6 +14,7 @@ import (
 
 	"github.com/antst/sessionbus/bus/sdk/go/internal/rpc"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestCallerMapsWireMethods(t *testing.T) {
@@ -144,7 +145,7 @@ func TestCallerSugarMatchesJavaScriptShapes(t *testing.T) {
 }
 
 func TestDialIsOneShotFramedClient(t *testing.T) {
-	root := t.TempDir()
+	root := testsocket.Directory(t)
 	t.Setenv("XDG_RUNTIME_DIR", root)
 	t.Setenv("SESSIONBUS_SOCKET", "")
 	path := filepath.Join(root, "sessionbus", "presence.sock")

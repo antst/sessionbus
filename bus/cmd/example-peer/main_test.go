@@ -13,6 +13,7 @@ import (
 
 	"github.com/antst/sessionbus/bus/internal/daemon"
 	sdk "github.com/antst/sessionbus/bus/sdk/go"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 type runResult struct {
@@ -113,6 +114,7 @@ func TestRunDeliveryInterruptAndCall(t *testing.T) {
 
 func TestInstalledReferenceWorker(t *testing.T) {
 	directory := t.TempDir()
+	socketDirectory := testsocket.Directory(t)
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +123,8 @@ func TestInstalledReferenceWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	socket := filepath.Join(directory, "sessionbus.sock")
-	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(directory, "sessions")})
+	socket := filepath.Join(socketDirectory, "sessionbus.sock")
+	service, err := daemon.Start(daemon.Config{SocketPath: socket, TablePath: filepath.Join(socketDirectory, "sessions")})
 	if err != nil {
 		t.Fatal(err)
 	}

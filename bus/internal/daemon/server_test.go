@@ -12,10 +12,11 @@ import (
 	"testing"
 
 	"github.com/antst/sessionbus/bus/sdk/go/socketpath"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestStartSweepsStaleSocketsAndLeavesLiveOnes(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	socket := filepath.Join(directory, "sessionbus.sock")
 	lanes := filepath.Join(directory, "lanes")
 	if err := os.Mkdir(lanes, 0o700); err != nil {
@@ -63,7 +64,7 @@ func TestStartRejectsRuntimeRootThatCannotFitLaneSocket(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		limit = 103
 	}
-	parent := shortTempDir(t)
+	parent := testsocket.Directory(t)
 	root := filepath.Join(parent, strings.Repeat("x", limit-20-len(parent)-1))
 	socket := filepath.Join(root, "presence.sock")
 	table := filepath.Join(t.TempDir(), "sessions")
