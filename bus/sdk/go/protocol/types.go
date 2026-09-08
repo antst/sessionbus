@@ -61,11 +61,12 @@ type WorkerHello struct {
 	HelloDescription
 }
 
+// PeerHello is a complete identity assertion; an empty Name omits the native name.
 type PeerHello struct {
 	Protocol  Integer        `json:"protocol"`
 	Product   string         `json:"product"`
 	SessionID string         `json:"session_id"`
-	Name      string         `json:"name"`
+	Name      string         `json:"name,omitempty"`
 	Groups    []string       `json:"groups"`
 	Info      map[string]any `json:"info"`
 }
@@ -103,7 +104,7 @@ type TurnResult struct {
 
 type DeliverySource struct {
 	SessionID string   `json:"session_id"`
-	Name      string   `json:"name"`
+	Name      string   `json:"name,omitempty"`
 	Product   string   `json:"product"`
 	Groups    []string `json:"groups"`
 }
@@ -128,7 +129,7 @@ type SessionSummary struct {
 	SessionID string         `json:"session_id"`
 	Kind      string         `json:"kind"`
 	Product   string         `json:"product"`
-	Name      string         `json:"name"`
+	Name      string         `json:"name,omitempty"`
 	Groups    []string       `json:"groups"`
 	Connected bool           `json:"connected"`
 	Running   bool           `json:"running"`

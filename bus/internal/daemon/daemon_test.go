@@ -1090,3 +1090,50 @@ func waitFile(t *testing.T, path string) {
 	}
 	t.Fatalf("file %s was not created", path)
 }
+
+func TestUnnamedPeerHelloDeliveryAndTitleAssertions(t *testing.T) {
+	d, socket := startDaemon(t)
+	unnamed := connectPeer(t, socket, "native-id", "", "team")
+	named := connectPeer(t, socket, "named-id", "named", "team")
+	for _, title := range []string{"", "first title", ""} {
+		must(t, unnamed.peer.Rehello(context.Background(), title, map[string]any{}))
+		var listed map[string]any
+		must(t, named.call("session.list", protocol.SessionListRequest{SessionID: "native-id@local"}, &listed))
+		row := listed["sessions"].([]any)[0].(map[string]any)
+		want := qualify(title, "local")
+		if title == "" {
+			if _, ok := row["name"]; ok {
+				t.Fatalf("absent name serialized: %#v", row)
+			}
+		} else if row["name"] != want {
+			t.Fatalf("title = %#v", row)
+		}
+		for _, input := range []protocol.MessageSendRequest{{Target: "native-id", Message: "direct"}, {Group: "team", Message: "group"}} {
+			var sent protocol.MessageSendResult
+			must(t, named.call("message.send", input, &sent))
+			if len(sent.Deliveries) != 1 || sent.Deliveries[0].SessionID != "native-id@local" || sent.Deliveries[0].Disposition != "injected" {
+				t.Fatalf("unnamed target: %#v", sent)
+			}
+			<-unnamed.deliveries
+		}
+		var sent protocol.MessageSendResult
+		must(t, unnamed.call("message.send", protocol.MessageSendRequest{Target: "named", Message: "source"}, &sent))
+		source := (<-named.deliveries).From
+		raw, err := json.Marshal(source)
+		must(t, err)
+		if source.Name != want || title == "" && strings.Contains(string(raw), `"name"`) {
+			t.Fatalf("source = %s", raw)
+		}
+	}
+	d.directory.mu.Lock()
+	found, ambiguous := d.directory.resolveLocked("", []string{"team"})
+	d.directory.mu.Unlock()
+	if found != nil || ambiguous {
+		t.Fatal("unnamed peer matched empty name")
+	}
+	var sent protocol.MessageSendResult
+	must(t, named.call("message.send", protocol.MessageSendRequest{Target: "first title", Message: "removed"}, &sent))
+	if sent.Deliveries[0].Reason != "unknown_session" {
+		t.Fatalf("removed name matched: %#v", sent)
+	}
+}

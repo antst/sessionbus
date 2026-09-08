@@ -273,3 +273,17 @@ func TestOriginLossDoesNotRetargetReplyAfterReconnect(t *testing.T) {
 		t.Fatal("replacement inherited the old pending call")
 	}
 }
+
+func TestForwardOptionalNameIsAbsentNeverEmpty(t *testing.T) {
+	for _, name := range []string{"", `,"name":"sender@alpha"`, `,"name":""`, `,"name":null`, `,"name":"@alpha"`, `,"name":"sender@beta"`} {
+		raw := []byte(`{"from":{"session_id":"sender@alpha","product":"peer","private_group":"session:sender@alpha","groups":["session:sender@alpha"]` + name + `},"request":{"method":"session.list","params":{"host":"beta"}}}`)
+		value, host, err := decodeForward(raw, "alpha")
+		valid := name == "" || name == `,"name":"sender@alpha"`
+		if (err == nil) != valid {
+			t.Fatalf("name %s: %v", name, err)
+		}
+		if valid && (host != "beta" || name == "" && value.From.Name != "") {
+			t.Fatalf("forward: %#v, %s", value, host)
+		}
+	}
+}
