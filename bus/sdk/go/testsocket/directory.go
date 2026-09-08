@@ -5,7 +5,6 @@ package testsocket
 
 import (
 	"os"
-	"runtime"
 )
 
 type testCleanup interface {
@@ -17,11 +16,9 @@ type testCleanup interface {
 // Directory returns a unique, short runtime directory and removes it after the test.
 func Directory(t testCleanup) string {
 	t.Helper()
-	parent := "/tmp"
-	if runtime.GOOS != "darwin" {
-		if runtimeDirectory := os.Getenv("XDG_RUNTIME_DIR"); runtimeDirectory != "" {
-			parent = runtimeDirectory
-		}
+	parent := os.Getenv("XDG_RUNTIME_DIR")
+	if parent == "" {
+		parent = "/tmp"
 	}
 	directory, err := os.MkdirTemp(parent, "sb-test-")
 	if err != nil {
