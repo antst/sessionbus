@@ -1,0 +1,39 @@
+name: Publish package preview
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify npm package boundary
+        working-directory: bus
+        run: |
+          npm install --ignore-scripts --no-package-lock
+          npm pack --dry-run --json > /tmp/sessionbus-pack.json
+          node - <<'NODE'
+          const report = require('/tmp/sessionbus-pack.json')[0]
+          const got = report.files.map(file => file.path).sort()
+          const want = [
+            'package.json',
+            'sdk/go/protocol/session.schema.json',
+            'sdk/js/LICENSE',
+            'sdk/js/caller.js',
+            'sdk/js/connection.js',
+            'sdk/js/index.js',
+            'sdk/js/schema.js',
+          ].sort()
+          if (JSON.stringify(got) !== JSON.stringify(want)) {
+            throw new Error(`unexpected npm pack files: ${JSON.stringify(got)}`)
+          }
+          NODE
+      - run: npx --yes pkg-pr-new publish ./bus

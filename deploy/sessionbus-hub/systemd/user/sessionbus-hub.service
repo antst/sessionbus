@@ -1,0 +1,16 @@
+[Unit]
+Description=Sessionbus central hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SESSIONBUS_HUB_LISTEN=:7419
+Environment=SESSIONBUS_HUB_CONFIG=%h/.config/sessionbus/hub.json
+EnvironmentFile=-%h/.config/sessionbus/hub.env
+ExecStart=@PREFIX@/libexec/sessionbus/hub/current/bin/sessionbus-hub
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

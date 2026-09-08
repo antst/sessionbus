@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.24.x'
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
+
+jobs:
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Format
+        run: test -z "$(gofmt -l bus)"
+      - name: Root tests
+        run: go test ./...
+      - name: Root race tests
+        run: go test -race ./...
+      - name: Root vet
+        run: go vet ./...
+      - name: Independent SDK tests
+        working-directory: bus/sdk/go
+        env:
+          GOWORK: 'off'
+        run: go test -race ./... && go vet ./...
+      - name: Workspace integration
+        run: go test ./bus/internal/daemon ./bus/cmd/...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+      - name: Root lint
+        run: golangci-lint run ./...
+      - name: Independent SDK lint
+        working-directory: bus/sdk/go
+        env:
+          GOWORK: 'off'
+        run: golangci-lint run ./...
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --prefix bus --ignore-scripts --no-package-lock
+      - run: npm test --prefix bus
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: darwin, arch: amd64}
+          - {os: darwin, arch: arm64}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build daemon commands
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          for command in sessionbus sessionbus-hub sessionbus-call example-peer; do
+            go build -trimpath -o "dist/${command}" "./bus/cmd/${command}"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sessionbus-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error

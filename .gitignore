@@ -1,0 +1,15 @@
+.DS_Store
+Thumbs.db
+dist/
+bin/
+vendor/
+__pycache__/
+*.exe
+*.test
+*.out
+*.log
+*.tmp
+*.swp
+.env*
+.vscode/
+.idea/

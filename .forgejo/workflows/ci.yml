@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: docker
+    steps:
+      - run: apk add --no-cache build-base git go nodejs npm
+      - uses: actions/checkout@v4
+      - name: Go workspace and SDK gates
+        run: |
+          test -z "$(gofmt -l bus)"
+          go test -race ./...
+          go vet ./...
+          (cd bus/sdk/go && GOWORK=off go test -race ./... && GOWORK=off go vet ./...)
+      - name: JavaScript SDK gates
+        run: |
+          npm install --prefix bus --ignore-scripts --no-package-lock
+          npm test --prefix bus
+
+  build:
+    runs-on: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: darwin, arch: amd64}
+          - {os: darwin, arch: arm64}
+    steps:
+      - run: apk add --no-cache go
+      - uses: actions/checkout@v4
+      - name: Build daemon commands
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          for command in sessionbus sessionbus-hub sessionbus-call example-peer; do
+            go build -trimpath -o "dist/${command}" "./bus/cmd/${command}"
+          done
+      - uses: forgejo/upload-artifact@v4
+        with:
+          name: sessionbus-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
