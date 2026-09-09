@@ -72,22 +72,22 @@ func TestRunDeliveryInterruptAndCall(t *testing.T) {
 			t.Fatalf("idle receipt = %#v, %v", receipt, err)
 		}
 	}
-	result, err := product.Run(context.Background(), &sdk.Run{}, "plain")
+	result, err := product.Run(context.Background(), &sdk.Run{}, textSeed("plain"))
 	if err != nil || result.Outcome != "completed" || result.Result != "first\nsecond\nplain" {
 		t.Fatalf("echo = %#v, %v", result, err)
 	}
-	result, err = product.Run(context.Background(), &sdk.Run{}, "call session.list {}")
+	result, err = product.Run(context.Background(), &sdk.Run{}, textSeed("call session.list {}"))
 	if err != nil || result.Result != `{"sessions":[]}` {
 		t.Fatalf("call result = %#v, %v", result, err)
 	}
-	if _, err = product.Run(context.Background(), &sdk.Run{}, "fail scripted"); err == nil || err.Error() != "scripted" {
+	if _, err = product.Run(context.Background(), &sdk.Run{}, textSeed("fail scripted")); err == nil || err.Error() != "scripted" {
 		t.Fatalf("failure = %v", err)
 	}
 
 	run := &sdk.Run{}
 	terminal := make(chan runResult, 1)
 	go func() {
-		result, err := product.Run(context.Background(), run, "block")
+		result, err := product.Run(context.Background(), run, textSeed("block"))
 		terminal <- runResult{result, err}
 	}()
 	waitActive(t, product)
@@ -147,7 +147,7 @@ func TestInstalledReferenceWorker(t *testing.T) {
 		t.Fatalf("spawn = %#v, %v", spawned, err)
 	}
 	result, err := peer.Caller.Run(context.Background(), sdk.TurnRunRequest{SessionID: spawned.SessionID, Input: "call session.list {}"})
-	if err != nil || result.Outcome != "completed" || !json.Valid([]byte(result.Result)) {
+	if err != nil || result.Result == nil || result.Result.Outcome != "completed" || !json.Valid([]byte(result.Result.Result)) {
 		t.Fatalf("worker call = %#v, %v", result, err)
 	}
 	if err = peer.Caller.Close(context.Background(), sdk.SessionCloseRequest{SessionID: spawned.SessionID, Forget: true}); err != nil {
@@ -169,3 +169,5 @@ func waitActive(t *testing.T, product *example) {
 	}
 	t.Fatal("run did not become active")
 }
+
+func textSeed(value string) sdk.RunInput { return sdk.RunInput{Text: &value} }

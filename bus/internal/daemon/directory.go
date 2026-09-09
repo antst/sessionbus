@@ -13,6 +13,8 @@ import (
 )
 
 type entry struct {
+	lifetime       *ownership
+	parent         *ownership
 	row            row
 	peer           bool
 	info           map[string]any
@@ -24,12 +26,13 @@ type entry struct {
 }
 
 type directory struct {
-	daemon  *Daemon
-	mu      sync.Mutex
-	closing bool
-	entries map[string]*entry
-	names   map[string]*entry
-	tokens  map[string]*launch
+	remoteOwners map[string]*ownership
+	daemon       *Daemon
+	mu           sync.Mutex
+	closing      bool
+	entries      map[string]*entry
+	names        map[string]*entry
+	tokens       map[string]*launch
 }
 
 type selected struct {
@@ -41,7 +44,7 @@ type selected struct {
 }
 
 func newDirectory(daemon *Daemon, rows []row) *directory {
-	d := &directory{daemon: daemon, entries: map[string]*entry{}, names: map[string]*entry{}, tokens: map[string]*launch{}}
+	d := &directory{daemon: daemon, entries: map[string]*entry{}, names: map[string]*entry{}, tokens: map[string]*launch{}, remoteOwners: map[string]*ownership{}}
 	for _, value := range rows {
 		item := &entry{row: cloneRow(value), done: closedChannel()}
 		d.entries[value.SessionID], d.names[value.Name] = item, item
@@ -67,7 +70,7 @@ func (d *directory) installPeer(owner *session, hello *protocol.PeerHello, host 
 	if found := d.entries[id]; found != nil && !found.peer {
 		return nil, nil, nil, false
 	}
-	item := &entry{peer: true, declaredGroups: append([]string(nil), hello.Groups...), attachment: owner, done: make(chan struct{})}
+	item := &entry{lifetime: &ownership{id: id, token: randomID("owner"), destinations: map[string]bool{}}, peer: true, declaredGroups: append([]string(nil), hello.Groups...), attachment: owner, done: make(chan struct{})}
 	item.row = row{SessionID: id, Product: hello.Product, Name: name}
 	item.row.Groups = orderedPeerGroups(hello.Groups, privateGroup(item))
 	item.info = maps.Clone(hello.Info)
@@ -78,6 +81,8 @@ func (d *directory) installPeer(owner *session, hello *protocol.PeerHello, host 
 	}
 	if found := d.entries[id]; found != nil {
 		displaced = found.attachment
+		item.lifetime = found.lifetime
+		found.lifetime = nil
 		d.end(found)
 	}
 	d.entries[id] = item
@@ -107,7 +112,7 @@ func (d *directory) admit(item *entry, owner *session, method string) int {
 	if item.claimed && method != "message.deliver" {
 		return protocol.Busy
 	}
-	if method == "turn.run" && item.running {
+	if method == "turn.execute" && item.running {
 		return protocol.Busy
 	}
 	if method == "turn.interrupt" && !item.running {
@@ -119,7 +124,7 @@ func (d *directory) admit(item *entry, owner *session, method string) int {
 func (d *directory) admitted(item *entry, method string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if method == "turn.run" {
+	if method == "turn.execute" {
 		item.running = true
 	}
 	if method == "session.close" {
@@ -157,13 +162,16 @@ func (d *directory) offline(item *entry, owner *session, forget bool) {
 func (d *directory) reserveFresh(value row, start *launch) (*entry, int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if start.parent == nil || start.parent.ended {
+		return nil, protocol.NotConnected
+	}
 	if d.names[value.Name] != nil {
 		return nil, protocol.NameTaken
 	}
 	if code := d.addLaunch(start); code != 0 {
 		return nil, code
 	}
-	item := &entry{row: cloneRow(value), claimed: true, done: make(chan struct{})}
+	item := &entry{row: cloneRow(value), parent: start.parent, claimed: true, done: make(chan struct{})}
 	start.entry = item
 	d.names[value.Name] = item
 	return item, 0
@@ -172,6 +180,9 @@ func (d *directory) reserveFresh(value row, start *launch) (*entry, int) {
 func (d *directory) reserveResume(id string, groups []string, start *launch) (*entry, int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if start.parent == nil || start.parent.ended {
+		return nil, protocol.NotConnected
+	}
 	previous := d.entries[id]
 	if previous == nil || previous.peer || !shares(groups, previous.row.Groups) {
 		return nil, protocol.UnknownSession
@@ -182,10 +193,16 @@ func (d *directory) reserveResume(id string, groups []string, start *launch) (*e
 	if previous.attachment != nil {
 		return nil, protocol.AlreadyConnected
 	}
+	policy, err := normalizePolicy(start.input, previous.row.Policy, start.parent.id)
+	if err != nil {
+		return nil, protocol.UnsupportedOpen
+	}
 	if code := d.addLaunch(start); code != 0 {
 		return nil, code
 	}
-	item := &entry{row: cloneRow(previous.row), claimed: true, done: make(chan struct{})}
+	item := &entry{row: cloneRow(previous.row), parent: start.parent, claimed: true, done: make(chan struct{})}
+	item.row.Policy = policy
+	start.previous = previous
 	d.entries[id], d.names[item.row.Name], start.entry, start.product = item, item, item, item.row.Product
 	return item, 0
 }
@@ -232,11 +249,12 @@ func (d *directory) publish(start *launch, owner *session, createdAt time.Time) 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	item := start.entry
-	if d.closing || d.entries[item.row.SessionID] != item || !item.claimed || item.attachment != nil {
+	if d.closing || d.entries[item.row.SessionID] != item || !item.claimed || item.attachment != nil || item.parent != nil && item.parent.ended && !item.row.Policy.Persistent {
 		return false
 	}
 	item.claimed = false
 	item.attachment = owner
+	item.lifetime = &ownership{id: item.row.SessionID, token: randomID("owner"), destinations: map[string]bool{}}
 	if !createdAt.IsZero() {
 		item.row.CreatedAt = createdAt
 	}
@@ -265,6 +283,10 @@ func (d *directory) releaseLaunch(start *launch) {
 	}
 	item.claimed = false
 	d.end(item)
+	if start.previous != nil {
+		d.entries[item.row.SessionID] = start.previous
+		d.names[item.row.Name] = start.previous
+	}
 	if !item.peer && item.row.CreatedAt.IsZero() {
 		delete(d.names, item.row.Name)
 		if d.entries[item.row.SessionID] == item {
@@ -337,7 +359,7 @@ func summarize(item *entry) protocol.SessionSummary {
 		kind = "peer"
 	}
 	return protocol.SessionSummary{SessionID: item.row.SessionID, Kind: kind, Product: item.row.Product, Name: item.row.Name,
-		Groups: append([]string(nil), item.row.Groups...), Connected: item.attachment != nil, Running: item.running, Info: maps.Clone(item.info)}
+		Groups: append([]string(nil), item.row.Groups...), Connected: item.attachment != nil, Running: item.running, Info: maps.Clone(item.info), Policy: cloneRow(item.row).Policy}
 }
 
 func (d *directory) route(item *entry, method string, request routedRequest) int {
@@ -372,6 +394,7 @@ func (d *directory) routeLocked(item *entry, method string, request routedReques
 }
 
 func (d *directory) end(item *entry) {
+	d.endOwner(item.lifetime)
 	item.attachment, item.running = nil, false
 	close(item.done)
 }

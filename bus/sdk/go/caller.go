@@ -5,53 +5,16 @@ package sessionkit
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"sync"
-	"time"
 
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
-const unavailableReason = "result unavailable, lane resumable"
-
-var ErrUnknownTurn = errors.New("unknown_turn")
-
 type callFunc func(context.Context, string, any, any) error
-
-type Caller struct {
-	call          callFunc
-	mu            sync.Mutex
-	next          uint64
-	runs, targets map[string]*localRun
-}
-
-type localRun struct {
-	TurnStatus
-	done chan struct{}
-}
-
-type StartResult struct {
-	TurnID string `json:"turn_id"`
-}
-
-type StatusRequest = StartResult
-
-type TurnStatus struct {
-	TurnID    string      `json:"turn_id"`
-	SessionID string      `json:"session_id"`
-	State     string      `json:"state"`
-	Result    *TurnResult `json:"result,omitempty"`
-	Reason    string      `json:"reason,omitempty"`
-}
-
-type WaitRequest struct {
-	TurnID    string `json:"turn_id"`
-	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
-}
+type Caller struct{ call callFunc }
+type WaitRequest = protocol.WaitRequest
 
 func newCaller(call callFunc) *Caller {
-	return &Caller{call: call, runs: map[string]*localRun{}, targets: map[string]*localRun{}}
+	return &Caller{call: call}
 }
 
 func NewCaller(call func(context.Context, string, any) (json.RawMessage, error)) *Caller {
@@ -88,8 +51,8 @@ func (c *Caller) Spawn(ctx context.Context, request LaneSpawnRequest) (LaneSpawn
 func (c *Caller) Resume(ctx context.Context, sessionID string) (LaneSpawnResult, error) {
 	return c.Spawn(ctx, LaneSpawnRequest{ResumeSessionID: sessionID})
 }
-func (c *Caller) Run(ctx context.Context, request TurnRunRequest) (TurnResult, error) {
-	return callAs[TurnResult](ctx, c.call, "turn.run", request)
+func (c *Caller) Run(ctx context.Context, request TurnRunRequest) (RunStatus, error) {
+	return callAs[RunStatus](ctx, c.call, "turn.run", request)
 }
 func (c *Caller) Interrupt(ctx context.Context, request SessionTarget) error {
 	_, err := callAs[struct{}](ctx, c.call, "turn.interrupt", request)
@@ -100,102 +63,27 @@ func (c *Caller) Close(ctx context.Context, request SessionCloseRequest) error {
 	return err
 }
 
-func (c *Caller) Start(request TurnRunRequest) (StartResult, error) {
-	if _, err := protocol.EncodeParams("turn.run", request); err != nil {
-		return StartResult{}, err
-	}
-	c.mu.Lock()
-	if c.targets[request.SessionID] != nil {
-		c.mu.Unlock()
-		return StartResult{}, &ProtocolError{Code: protocol.Busy, Message: "busy"}
-	}
-	c.next++
-	run := &localRun{TurnStatus: TurnStatus{TurnID: fmt.Sprintf("t-%d", c.next), SessionID: request.SessionID, State: "running"}, done: make(chan struct{})}
-	c.runs[run.TurnID], c.targets[run.SessionID] = run, run
-	c.mu.Unlock()
-	go func() {
-		result, err := c.Run(context.Background(), request)
-		c.settle(run, result, err)
-	}()
-	return StartResult{TurnID: run.TurnID}, nil
+func (c *Caller) Start(ctx context.Context, request TurnRunRequest) (RunRef, error) {
+	return callAs[RunRef](ctx, c.call, "turn.start", request)
 }
-
-func (c *Caller) Status(request StatusRequest) (TurnStatus, error) {
-	if request.TurnID == "" {
-		return TurnStatus{}, errors.New("invalid status request")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	run := c.runs[request.TurnID]
-	if run == nil {
-		return TurnStatus{}, ErrUnknownTurn
-	}
-	result := run.TurnStatus
-	if run.State != "running" {
-		delete(c.runs, request.TurnID)
-	}
-	return result, nil
+func (c *Caller) Status(ctx context.Context, request ReadRequest) (RunStatus, error) {
+	return callAs[RunStatus](ctx, c.call, "turn.status", request)
 }
-
-func (c *Caller) Wait(request WaitRequest) (TurnStatus, error) {
+func (c *Caller) Wait(request WaitRequest) (RunStatus, error) {
 	return c.WaitContext(context.Background(), request)
 }
 
-// WaitContext cancels only the wait, leaving the run/result available for collection.
-func (c *Caller) WaitContext(ctx context.Context, request WaitRequest) (TurnStatus, error) {
-	if request.TurnID == "" || request.TimeoutMS != nil && *request.TimeoutMS < 0 {
-		return TurnStatus{}, errors.New("invalid wait request")
-	}
-	c.mu.Lock()
-	run := c.runs[request.TurnID]
-	c.mu.Unlock()
-	if run == nil {
-		return TurnStatus{}, ErrUnknownTurn
-	}
-	var timeout <-chan time.Time
-	if request.TimeoutMS != nil {
-		timer := time.NewTimer(time.Duration(*request.TimeoutMS) * time.Millisecond)
-		defer timer.Stop()
-		timeout = timer.C
-	}
-	select {
-	case <-run.done:
-	case <-timeout:
-	case <-ctx.Done():
-	}
+// WaitContext abandons only this non-consuming read, never the worker's result.
+func (c *Caller) WaitContext(ctx context.Context, request WaitRequest) (RunStatus, error) {
+	return callAs[RunStatus](ctx, c.call, "turn.wait", request)
+}
+
+// Ack commits consumption. Once submitted, its response wins later cancellation.
+func (c *Caller) Ack(ctx context.Context, request RunRef) error {
 	if err := ctx.Err(); err != nil {
-		return TurnStatus{}, err
+		return err
 	}
-
-	return c.Status(StatusRequest{TurnID: request.TurnID})
+	_, err := callAs[struct{}](context.WithoutCancel(ctx), c.call, "turn.ack", request)
+	return err
 }
-
-func (c *Caller) settle(run *localRun, result TurnResult, err error) {
-	c.mu.Lock()
-	if c.targets[run.SessionID] != run {
-		c.mu.Unlock()
-		return
-	}
-	if err == nil {
-		run.State, run.Result = "done", &result
-	} else {
-		run.State, run.Reason = "unavailable", unavailableReason
-		var value *ProtocolError
-		if errors.As(err, &value) {
-			run.Reason = fmt.Sprintf("%d %s", value.Code, value.Message)
-		}
-	}
-	delete(c.targets, run.SessionID)
-	close(run.done)
-	c.mu.Unlock()
-}
-
-func (c *Caller) disconnected() {
-	c.mu.Lock()
-	for target, run := range c.targets {
-		run.State, run.Reason = "unavailable", fmt.Sprintf("%d %s", protocol.NotConnected, "not_connected")
-		delete(c.targets, target)
-		close(run.done)
-	}
-	c.mu.Unlock()
-}
+func (c *Caller) disconnected() {} // Results belong to the resident worker.

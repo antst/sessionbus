@@ -26,6 +26,8 @@ type answer struct {
 }
 
 type routedRequest struct {
+	runID       string
+	collect     bool
 	destination *entry
 	method      string
 	params      any
@@ -41,6 +43,12 @@ type replyEvent struct {
 type supersedeEvent struct{}
 
 type session struct {
+	runID, runGeneration       string
+	runSequence                uint64
+	deadline, previousDeadline time.Time
+	autoClose                  <-chan time.Time
+	stopAuto                   func()
+
 	daemon        *Daemon
 	wire          *conn.Conn
 	inbox         chan any
@@ -98,6 +106,9 @@ func (s *session) run() {
 		select {
 		case event := <-s.inbox:
 			s.handleEvent(event)
+		case <-s.autoClose:
+			s.autoClose = nil
+			s.policyClose()
 		case <-closeTimer:
 			s.closeTimer = nil
 			s.hardStop()
@@ -116,6 +127,8 @@ func (s *session) run() {
 
 func (s *session) handleEvent(event any) {
 	switch value := event.(type) {
+	case ownerEndEvent:
+		s.ownerEnded(value.owner)
 	case conn.Frame:
 		if !s.stopping {
 			s.handleFrame(value)
@@ -232,25 +245,68 @@ func (s *session) firstHello(frame protocol.Frame) {
 }
 
 func (s *session) issue(request routedRequest) {
+	if s.closeCall != nil && !request.collect {
+		request.reply <- answer{code: protocol.Busy}
+		return
+	}
 	if len(s.pending) >= maxPendingCalls {
 		request.reply <- answer{code: protocol.Busy}
 		return
+	}
+	method := request.method
+	if method == "turn.start" || method == "turn.run" {
+		request.method, request.collect = "turn.execute", method == "turn.run"
 	}
 	if code := s.daemon.directory.admit(s.identity, s, request.method); code != 0 {
 		request.reply <- answer{code: code}
 		return
 	}
-	if request.method == "session.close" {
+	if method == "session.close" {
 		s.beginClose(request)
 		return
+	}
+	if request.method == "turn.execute" {
+		input := request.params.(*protocol.TurnRunRequest)
+		request.runID = s.reserveRun()
+		request.params = &protocol.ExecuteRequest{SessionID: s.identity.row.SessionID, RunID: request.runID, Input: input.Input}
+	} else if method == "message.deliver" && !s.identity.peer && s.identity.row.Policy.IdleMessage == "run" && s.runID == "" {
+		if s.closeCall != nil {
+			request.reply <- answer{code: protocol.Busy}
+			return
+		}
+		input := request.params.(protocol.DeliveryRequest)
+		request.runID = s.reserveRun()
+		input.RunID = request.runID
+		request.params = input
+	}
+	// The worker sees its canonical opened identity even when the public caller
+	// selected the lane by an unqualified local ID.
+	switch input := request.params.(type) {
+	case *protocol.ReadRequest:
+		copy := *input
+		copy.SessionID = s.identity.row.SessionID
+		request.params = &copy
+	case *protocol.WaitRequest:
+		copy := *input
+		copy.SessionID = s.identity.row.SessionID
+		request.params = &copy
+	case *protocol.RunRef:
+		copy := *input
+		copy.SessionID = s.identity.row.SessionID
+		request.params = &copy
 	}
 	s.nextOut++
 	body, err := protocol.RequestBytes(s.nextOut, request.method, request.params)
 	if err != nil || !s.wire.Send(body) {
+		if request.runID != "" {
+			s.refuseRun(request.runID)
+		}
 		request.reply <- answer{code: protocol.NotConnected}
 		return
 	}
-	s.daemon.directory.admitted(s.identity, request.method)
+	if request.runID != "" {
+		s.daemon.directory.admitted(s.identity, "turn.execute")
+	}
 	s.pending[s.nextOut] = request
 }
 
@@ -262,18 +318,22 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 		return
 	}
 	delete(s.pending, frame.ID)
+	if request.method == "turn.execute" && request.collect {
+		defer s.writeDeferredClose()
+	}
 	if request.destination != s.identity || !s.daemon.directory.current(request.destination, s) {
 		request.reply <- answer{code: protocol.NotConnected}
 		return
 	}
-	if request.method == "turn.run" {
-		s.daemon.directory.finishRun(s.identity, s)
-	}
+
 	if request.method == "session.close" {
 		s.finishCloseResponse(frame)
 		return
 	}
 	if frame.Error != nil {
+		if request.runID != "" && (request.method == "turn.execute" || frame.Error.Code != protocol.Internal) {
+			s.refuseRun(request.runID)
+		}
 		request.reply <- errorAnswer(frame.Error)
 		return
 	}
@@ -282,6 +342,19 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 		s.wire.Close()
 		request.reply <- answer{code: protocol.NotConnected}
 		return
+	}
+	if request.method == "turn.execute" {
+		ref := value.(*protocol.RunRef)
+		if ref.RunID != request.runID || ref.SessionID != s.identity.row.SessionID {
+			s.wire.Close()
+			request.reply <- answer{code: protocol.NotConnected}
+			return
+		}
+		if request.collect {
+			request.method, request.params, request.runID = "turn.wait", &protocol.WaitRequest{SessionID: ref.SessionID, RunID: ref.RunID}, ""
+			s.issue(request)
+			return
+		}
 	}
 	request.reply <- answer{value: value}
 }
@@ -299,6 +372,7 @@ func (s *session) connectionClosed() {
 		return
 	}
 	s.stopping, s.closed = true, true
+	s.stopAutoClose()
 	s.wire.OwnerClosed()
 	s.daemon.directory.detach(s.identity, s)
 	s.settlePending(protocol.NotConnected)

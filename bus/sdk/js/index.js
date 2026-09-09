@@ -3,10 +3,11 @@
 "use strict";
 
 const net = require("node:net");
+const { performance } = require("node:perf_hooks");
 const { isDeepStrictEqual } = require("node:util");
 const { ACTIONS, Caller } = require("./caller.js");
 const { Connection, ProtocolError } = require("./connection.js");
-const { schema, validate } = require("./schema.js");
+const { schema, validate, encode } = require("./schema.js");
 
 const ENV = ["SESSIONBUS_LAUNCH_TOKEN", "SESSIONBUS_LOCAL_KEY", "SESSIONBUS_SOCKET"];
 const never = new Promise(() => {});
@@ -16,11 +17,18 @@ class Run {
     this.Native = null;
     this.interrupted = false;
     this.controller = new AbortController();
-    parent?.addEventListener("abort", () => this.controller.abort(parent.reason), { once: true });
+    const abort = () => this.controller.abort(parent.reason);
+    if (parent?.aborted) abort(); else parent?.addEventListener("abort", abort, { once: true });
     this.finished = false;
-    this.Done = new Promise((resolve) => { this.finish = () => { this.finished = true; resolve(); }; });
+    this.Done = new Promise((resolve) => { this.finish = () => { parent?.removeEventListener("abort", abort); this.finished = true; resolve(); }; });
     this.AdmittedDone = new Promise((resolve) => { this.admit = resolve; });
     this.admitted = false;
+  }
+  ReportDelivery(value, failure) {
+    if (!this.receipt) return Promise.reject(new Error("run has no delivery seed"));
+    if (this.receiptReported) return Promise.reject(new Error("delivery receipt already reported"));
+    this.receiptReported = true;
+    return this.receipt(value, failure);
   }
   Interrupted() { return this.interrupted; }
   Admitted() { if (!this.admitted) { this.admitted = true; this.admit(); } }
@@ -34,6 +42,8 @@ class Worker {
     this.controller = new AbortController();
     this.run = null;
     this.opened = false;
+    this.records = []; this.generation = ""; this.lastSequence = 0; this.acknowledged = 0; this.waiters = 0;
+    this.changed = new Promise((resolve) => { this.changedResolve = resolve; });
     this.closeRequest = {};
     this.closed = new Promise((resolve) => { this.finish = resolve; });
     this.caller = new Caller(this, options.caller);
@@ -43,6 +53,7 @@ class Worker {
     try {
       const { socket, token } = environment(this.env, true);
       const hello = await this.callbacks.hello(this.controller.signal);
+      this.supportsWake = hello.supports_message_run === true;
       const stream = this.connect(socket);
       this.connection = new Connection(stream, true, (request) => this._handle(request));
       this.connection.signal.addEventListener("abort", () => this.controller.abort(this.connection.signal.reason), { once: true });
@@ -54,46 +65,125 @@ class Worker {
   _handle(request) {
     if (request.method === "session.superseded") { void this.connection.result(request, {}).finally(() => this.shutdown()); return; }
     if (request.method === "session.open") { queueMicrotask(() => void this._open(request)); return; }
-    if (request.method === "turn.run") {
-      if (!this.opened || this.run) { void this.connection.error(request, -32003); return; }
-      const run = new Run(this.controller.signal); this.run = run; queueMicrotask(() => void this._run(request, run)); return;
-    }
+    if (request.method === "turn.execute") { this._execute(request); return; }
+    if (request.method === "turn.status" || request.method === "turn.wait") { void this._read(request); return; }
+    if (request.method === "turn.ack") { void this._ack(request); return; }
     if (request.method === "turn.interrupt") {
       if (!this.run) { void this.connection.error(request, -32004); return; }
       if (!this.run.Done) { void this.connection.result(request, {}); return; }
       if (this.run.controller.signal.aborted) { void this.connection.error(request, -32004); return; }
       const run = this.run, call = !run.interrupted; run.interrupted = true; queueMicrotask(() => void this._interrupt(request, run, call)); return;
     }
-    if (request.method === "message.deliver") { const run = this.run; if (run && !run.Done) void this.connection.result(request, { disposition: "rejected", reason: "closing" }); else queueMicrotask(() => void this._deliver(request, run)); return; }
+    if (request.method === "message.deliver") { if (request.params.run_id) { this._execute(request, request.params); return; } const run = this.run; if (run && !run.Done) void this.connection.result(request, { disposition: "rejected", reason: "closing" }); else queueMicrotask(() => void this._deliver(request, run)); return; }
     if (request.method === "session.close") {
       const run = this.run;
       if (run && !run.Done) return this.shutdown();
       this.closeRequest = request.params;
       this.run = {};
-      const call = run && !run.interrupted;
-      if (run) run.interrupted = true;
+      const call = run && !run.controller.signal.aborted && !run.interrupted;
+      if (call) run.interrupted = true;
       queueMicrotask(() => void this._close(request, run, call));
     }
   }
   async _open(request) {
+    if (request.params.policy?.idle_message === "run" && !this.supportsWake) { await this._replyError(request, -32008); return; }
     let result; try { result = await this.callbacks.open(this.controller.signal, request.params); } catch (error) { await this._replyError(request, -32009, { stderr_tail: [clean(error)] }); return; }
+    const at = request.params.name.lastIndexOf("@");
+    this.sessionID = result.session_id + (at < 0 ? "" : request.params.name.slice(at));
     this.opened = true; try { await this.connection.result(request, result); } catch { this.shutdown(); }
   }
-  async _run(request, run) {
-    let result; try { result = await this.callbacks.run(run.controller.signal, run, request.params.input); } catch (error) { result = { outcome: "failed", result: clean(error) }; }
-    run.controller.abort(); result = terminal(result);
-    try { await this.connection.result(request, result); if (this.run === run) this.run = null; } catch { this.shutdown(); } finally { run.finish(); }
+  _execute(request, delivery) {
+    if (!this.opened || this.run || this.records.length >= 256) { void this._replyError(request, -32003); return; }
+    const ref = { session_id: delivery ? this.sessionID : request.params.session_id, run_id: request.params.run_id };
+    const parsed = runSequence(ref.run_id);
+    if (ref.session_id !== this.sessionID || !parsed || this.generation && this.generation !== parsed.generation || parsed.sequence !== this.lastSequence + 1) { void this._replyError(request, -32600); return; }
+    this.generation = parsed.generation; this.lastSequence = parsed.sequence;
+    const run = new Run(this.controller.signal), record = { status: { ...ref, state: "running" }, sequence: parsed.sequence };
+    let seed;
+    if (delivery) { const copy = structuredClone(delivery); delete copy.run_id; seed = { delivery: copy }; run.receipt = (value, failure) => this._deliveryReply(request, value, failure); }
+    else seed = { text: request.params.input };
+    this.run = run; this.records.push(record);
+    void (async () => {
+      try { if (!delivery) await this.connection.result(request, ref); await this._run(run, record, seed); } catch { this.shutdown(); }
+    })();
+  }
+  async _run(run, record, seed) {
+    let status = { ...record.status, state: "done" };
+    try {
+      let result;
+      try { result = await this.callbacks.run(run.controller.signal, run, seed); } finally { run.controller.abort(); }
+      status.result = structuredClone(result);
+    } catch (error) { status = { ...record.status, state: "unavailable", reason: clean(error) }; }
+    try {
+      if (status.state === "done") encode("TurnRunResult", status.result);
+      encode("RunStatus", status);
+      if (Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: Number.MAX_SAFE_INTEGER, result: status }) + "\n") > 1 << 20) throw new Error("frame too large");
+    } catch { status = { ...record.status, state: "unavailable", reason: "native result failed validation" }; }
+    if (seed.delivery) { try { await run.ReportDelivery(undefined, new ProtocolError({ code: -32603, message: "internal", data: "native delivery receipt unavailable" })); } catch {} }
+    const ready = { session_id: status.session_id, run_id: status.run_id, state: status.state, ...(status.result ? { outcome: status.result.outcome } : { reason: status.reason }) };
+    await this.connection.call("turn.ready", ready, this.controller.signal, () => {
+      record.status = status; if (this.run === run) this.run = null;
+      this.changedResolve(); this.changed = new Promise((resolve) => { this.changedResolve = resolve; }); run.finish();
+    });
+  }
+  _find(request) { return this.records.find((record) => record.status.session_id === request.session_id && (!request.run_id || record.status.run_id === request.run_id)); }
+  async _read(request) {
+    if (this.waiters >= 256 || this.run && !this.run.Done) { await this._replyError(request, -32003); return; }
+    this.waiters++;
+    let timer, removeAbort;
+    try {
+      let timedOut = false;
+      const timeout = request.params.timeout_ms === undefined ? never : new Promise((resolve) => {
+        const deadline = performance.now() + request.params.timeout_ms;
+        // Node clamps larger delays to 1ms. Preserve the explicit user deadline
+        // with maximum-length timer segments; this is not RPC cancellation polling.
+        const expire = () => { const remaining = deadline - performance.now(); if (remaining > 0) timer = setTimeout(expire, Math.min(remaining, 2147483647)); else { timedOut = true; resolve(); } };
+        timer = setTimeout(expire, Math.min(request.params.timeout_ms, 2147483647));
+      });
+      const aborted = new Promise((resolve) => { const abort = () => resolve(); this.controller.signal.addEventListener("abort", abort, { once: true }); removeAbort = () => this.controller.signal.removeEventListener("abort", abort); });
+      while (!this.controller.signal.aborted) {
+        const record = this._find(request.params);
+        if (!record) { await this._replyError(request, -32001); return; }
+        if (request.method === "turn.status" || record.status.state !== "running" || timedOut) { await this.connection.result(request, record.status); return; }
+        await Promise.race([this.changed, timeout, aborted]);
+      }
+    } catch { this.shutdown(); }
+    finally { clearTimeout(timer); removeAbort?.(); this.waiters--; this.changedResolve(); this.changed = new Promise((resolve) => { this.changedResolve = resolve; }); }
+  }
+  async _ack(request) {
+    const parsed = runSequence(request.params.run_id);
+    let code = -32001;
+    if (parsed && parsed.generation === this.generation && request.params.session_id === this.sessionID) {
+      if (parsed.sequence <= this.acknowledged) code = 0;
+      else if (this.records[0]?.status.run_id === request.params.run_id && this.records[0].status.state !== "running") { this.acknowledged = parsed.sequence; this.records.shift(); code = 0; }
+      else if (this.records.length) code = -32003;
+    }
+    if (code) await this._replyError(request, code);
+    else { try { await this.connection.result(request, {}); } catch { this.shutdown(); } }
   }
   async _interrupt(request, run, call) {
     try { if (call && !run.controller.signal.aborted) await this.callbacks.interrupt(run.controller.signal, run); } catch (error) { callbackError("interrupt", error); }
     try { await this.connection.result(request, {}); } catch { this.shutdown(); }
   }
   async _deliver(request, run) {
-    let receipt; try { receipt = await this.callbacks.deliver(this.controller.signal, request.params, undefined, run); } catch (error) { if (error instanceof ProtocolError && error.code === -32603) { await this._replyError(request, error.code, error.data); return; } receipt = { disposition: "rejected", reason: clean(error) }; }
-    try { await this.connection.result(request, receipt); } catch { this.shutdown(); }
+    let receipt, failure;
+    try { receipt = await this.callbacks.deliver(this.controller.signal, request.params, undefined, run); } catch (error) { failure = error; }
+    try { await this._deliveryReply(request, receipt, failure); } catch {}
+  }
+  async _deliveryReply(request, receipt, failure) {
+    try {
+      if (failure instanceof ProtocolError && failure.code === -32603) await this.connection.error(request, failure.code, failure.data);
+      else await this.connection.result(request, failure ? { disposition: "rejected", reason: clean(failure) } : receipt);
+    } catch (error) { this.shutdown(); throw error; }
   }
   async _close(request, run, interrupt) {
-    if (interrupt) void Promise.resolve().then(() => this.callbacks.interrupt(run.controller.signal, run)).catch((error) => callbackError("interrupt", error)); if (run) await run.Done; this.controller.abort();
+    if (interrupt) void Promise.resolve().then(() => { if (!run.controller.signal.aborted) return this.callbacks.interrupt(run.controller.signal, run); }).catch((error) => callbackError("interrupt", error));
+    if (run) {
+      await Promise.race([run.Done, this.connection.done]);
+      if (this.connection.signal.aborted) { run.finish(); return; }
+    }
+    while (this.waiters && !this.connection.signal.aborted) await this.changed;
+    this.controller.abort();
     await this._closeProduct(this.connection.signal);
     try { await this.connection.result(request, {}); } catch { this.shutdown(); } finally { this.shutdown(); }
   }
@@ -171,7 +261,7 @@ function callerContext(promise, signal, acknowledged) {
 }
 function snapshot(identity) { return { ...identity, groups: [...identity.groups], info: structuredClone(identity.info) }; }
 function environment(env, worker) { const values = Object.fromEntries(ENV.map((name) => [name, env[name]])); for (const name of ENV) delete env[name]; if (!values.SESSIONBUS_SOCKET) throw new Error("sessionbus socket is required"); if (values.SESSIONBUS_LOCAL_KEY) throw new Error("local key transport not implemented in this build"); if (worker && !values.SESSIONBUS_LAUNCH_TOKEN) throw new Error("launch token is required"); return { socket: values.SESSIONBUS_SOCKET, token: values.SESSIONBUS_LAUNCH_TOKEN }; }
-function terminal(result = {}) { if (!result || typeof result !== "object") return result; if (!Object.hasOwn(result, "result")) result = { ...result, result: "" }; if (typeof result.result !== "string") return result; const characters = [...result.result]; return { ...result, result: characters.slice(0, 262144).join(""), ...(characters.length > 262144 ? { truncated: true } : {}) }; }
+function runSequence(id) { const match = /^([^/]+)\/([1-9][0-9]*)$/.exec(id); if (!match) return null; const sequence = Number(match[2]); return Number.isSafeInteger(sequence) ? { generation: match[1], sequence } : null; }
 function clean(error) { return String(error?.message || error || "product callback failed"); }
 function callbackError(callback, error) { if (error) process.stderr.write(`sessionbus: product ${callback}: ${JSON.stringify(clean(error))}\n`); }
 

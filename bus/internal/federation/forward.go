@@ -99,6 +99,12 @@ func targetHost(request PublicRequest) (string, error) {
 		return value.Host, nil
 	case *protocol.TurnRunRequest:
 		return suffix(value.SessionID)
+	case *protocol.ReadRequest:
+		return suffix(value.SessionID)
+	case *protocol.WaitRequest:
+		return suffix(value.SessionID)
+	case *protocol.RunRef:
+		return suffix(value.SessionID)
 	case *protocol.SessionTarget:
 		return suffix(value.SessionID)
 	case *protocol.SessionCloseRequest:

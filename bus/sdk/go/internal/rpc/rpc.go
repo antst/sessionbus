@@ -26,6 +26,7 @@ type pending struct {
 	result any
 	done   chan error
 	seen   func() error
+	drain  bool
 }
 
 type Conn struct {
@@ -63,12 +64,15 @@ func (c *Conn) CallObserved(ctx context.Context, method string, params, result a
 }
 
 func (c *Conn) call(ctx context.Context, method string, params, result any, seen func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id, p := c.begin(method, params, result, seen)
 	select {
 	case err := <-p.done:
 		return err
 	case <-ctx.Done():
-		if c.drop(id, p) {
+		if c.abandon(id, p) {
 			return ctx.Err()
 		}
 		return <-p.done
@@ -97,6 +101,8 @@ func (c *Conn) begin(method string, params, result any, seen func() error) (int6
 		err = ErrClosed
 	} else if c.next == protocol.MaxRequestID {
 		err = errors.New("request id space exhausted")
+	} else if len(c.pending) >= protocol.MaxOperations {
+		err = &protocol.RPCError{Code: protocol.Busy, Message: "busy"}
 	} else {
 		c.next++
 		id = c.next
@@ -222,7 +228,12 @@ func (c *Conn) receiveResponse(frame protocol.Frame) {
 	}
 	err := error(frame.Error)
 	if frame.Error == nil {
-		if err = protocol.UnmarshalResult(p.method, frame.Result, p.result); err != nil {
+		if p.drain {
+			_, err = protocol.DecodeResult(p.method, frame.Result)
+		} else {
+			err = protocol.UnmarshalResult(p.method, frame.Result, p.result)
+		}
+		if err != nil {
 			c.close(err)
 		} else if p.seen != nil {
 			err = p.seen()
@@ -232,6 +243,21 @@ func (c *Conn) receiveResponse(frame protocol.Frame) {
 		}
 	}
 	p.done <- err
+}
+
+// Keep the admitted correlation until its reply or connection closure. The
+// reader and cancellation compete under stateMu; only the winner may use the
+// original target/observer. A draining reply still undergoes full validation.
+func (c *Conn) abandon(id int64, want pending) bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	p, ok := c.pending[id]
+	if !ok || p.done != want.done {
+		return false
+	}
+	p.result, p.seen, p.drain = nil, nil, true
+	c.pending[id] = p
+	return true
 }
 
 func (c *Conn) drop(id int64, want pending) bool {

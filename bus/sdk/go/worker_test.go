@@ -3,13 +3,16 @@
 package sessionkit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -50,7 +53,8 @@ func (p *fakeProduct) Open(_ context.Context, request OpenRequest) (OpenResult, 
 	}
 	return OpenResult{SessionID: "product-session"}, nil
 }
-func (p *fakeProduct) Run(ctx context.Context, run *Run, input string) (TurnResult, error) {
+func (p *fakeProduct) Run(ctx context.Context, run *Run, seed RunInput) (TurnResult, error) {
+	input := *seed.Text
 	atomic.AddInt32(&p.calls[2], 1)
 	switch input {
 	case "block":
@@ -211,7 +215,7 @@ func (p *fakeProduct) Error() string {
 	}
 	return "failed exactly"
 }
-func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *rpc.Conn {
+func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *workerHarness {
 	setEnvironment(t, "token", "")
 	worker, daemon := net.Pipe()
 	p.worker = NewWorker(p)
@@ -223,7 +227,8 @@ func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *rpc.
 	}
 	hello := make(chan struct{})
 	var h *rpc.Conn
-	h = rpc.New(daemon, false, func(_ context.Context, request *rpc.Request) {
+	transport := &workerTestTransport{Conn: daemon, waitWritten: make(chan struct{}, 1)}
+	h = rpc.New(transport, false, func(_ context.Context, request *rpc.Request) {
 		switch request.Method {
 		case "session.hello":
 			if acknowledge {
@@ -232,6 +237,8 @@ func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *rpc.
 				_ = h.Close()
 			}
 			close(hello)
+		case "turn.ready":
+			go func() { _ = h.Result(request, struct{}{}) }()
 		case "session.list":
 			if p.worker.opened.Load() {
 				check(t, h.Result(request, protocol.SessionListResult{Sessions: []protocol.SessionSummary{}}) == nil, "list response failed")
@@ -243,18 +250,88 @@ func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *rpc.
 	go p.worker.Serve(context.Background())
 	<-hello
 	t.Cleanup(func() { p.worker.Shutdown(); <-p.worker.Closed() })
+	harness := &workerHarness{Conn: h, waitWritten: transport.waitWritten}
 	if openNow {
-		open(t, h)
+		open(t, harness)
 	}
-	return h
+	return harness
 }
 
-func async(h *rpc.Conn, method string, params, result any) <-chan error {
+// workerHarness performs the daemon's execute-then-wait translation on the
+// real wire for the shared native callback lifecycle rows.
+type workerHarness struct {
+	*rpc.Conn
+	mu          sync.Mutex
+	sequence    uint64
+	waitWritten <-chan struct{}
+}
+
+type workerTestTransport struct {
+	net.Conn
+	waitWritten chan struct{}
+}
+
+func (c *workerTestTransport) Write(body []byte) (int, error) {
+	n, err := c.Conn.Write(body)
+	if bytes.Contains(body, []byte(`"method":"turn.wait"`)) {
+		c.waitWritten <- struct{}{}
+	}
+	return n, err
+}
+func (h *workerHarness) Call(ctx context.Context, method string, params, result any) error {
+	if method != "turn.run" {
+		if method == "session.close" {
+			h.mu.Lock()
+			h.mu.Unlock() //nolint:staticcheck // Barrier: the earlier blocking run has written its read frame.
+		}
+		return h.Conn.Call(ctx, method, params, result)
+	}
+	input := params.(protocol.TurnRunRequest)
+	h.mu.Lock()
+	h.sequence++
+	id := "fixture/" + strconv.FormatUint(h.sequence, 10)
+	var ref RunRef
+	err := h.Conn.Call(ctx, "turn.execute", protocol.ExecuteRequest{SessionID: input.SessionID, RunID: id, Input: input.Input}, &ref)
+	if err != nil {
+		h.sequence--
+	}
+	if err != nil {
+		h.mu.Unlock()
+		return err
+	}
+	var status RunStatus
+	waiting := make(chan error, 1)
+	go func() {
+		waiting <- h.Conn.Call(ctx, "turn.wait", WaitRequest{SessionID: ref.SessionID, RunID: ref.RunID}, &status)
+	}()
+	select {
+	case <-h.waitWritten:
+	case <-h.Conn.Done():
+	}
+	h.mu.Unlock()
+	err = <-waiting
+	if err != nil {
+		return err
+	}
+	if value, ok := result.(*RunStatus); ok {
+		*value = status
+		return nil
+	}
+	if status.Result == nil {
+		return errors.New(status.Reason)
+	}
+	*result.(*TurnResult) = *status.Result
+	return nil
+}
+
+func async(h interface {
+	Call(context.Context, string, any, any) error
+}, method string, params, result any) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- h.Call(context.Background(), method, params, result) }()
 	return done
 }
-func open(t *testing.T, h *rpc.Conn) {
+func open(t *testing.T, h *workerHarness) {
 	var result OpenResult
 	check(t, h.Call(context.Background(), "session.open", OpenRequest{Name: "parent/leaf@local", Groups: []string{"session:parent"}, ResumeSessionID: "product-session", Open: OpenOptions{Cwd: "/tmp", PermissionMode: "ask", Model: "model", ReasoningEffort: "high", Arguments: []string{"--flag"}}}, &result) == nil && result.SessionID == "product-session", "open result = %#v", result)
 }
@@ -301,18 +378,21 @@ func runCase(t *testing.T, name string) [6]int32 {
 		startHarness(t, p, false, false)
 	case "terminal-results":
 		h := startHarness(t, p, true, true)
-		for _, test := range []struct {
-			input string
-			want  TurnResult
-		}{
-			{"ok", TurnResult{Outcome: "completed", Result: "ok"}},
-			{"interrupted", TurnResult{Outcome: "interrupted"}},
-			{"fail", TurnResult{Outcome: "failed", Result: "failed exactly"}},
-			{"completed", TurnResult{Outcome: "completed"}},
-			{"long", TurnResult{Outcome: "completed", Result: strings.Repeat("x", protocol.MaxTextRunes), Truncated: true}},
-		} {
-			var result TurnResult
-			check(t, h.Call(context.Background(), "turn.run", protocol.TurnRunRequest{SessionID: "product-session@local", Input: test.input}, &result) == nil && result == test.want, "%s result = %#v", test.input, result)
+		for _, input := range []string{"ok", "interrupted", "fail", "completed", "long"} {
+			var result RunStatus
+			check(t, h.Call(context.Background(), "turn.run", protocol.TurnRunRequest{SessionID: target.SessionID, Input: input}, &result) == nil, "read failed")
+			if input == "fail" || input == "long" {
+				check(t, result.State == "unavailable" && result.Result == nil, "invalid native result %#v", result)
+				continue
+			}
+			want := TurnResult{Outcome: "completed"}
+			if input == "interrupted" {
+				want.Outcome = input
+			}
+			if input == "ok" {
+				want.Result = input
+			}
+			check(t, result.Result != nil && *result.Result == want, "terminal %#v", result)
 		}
 	case "one-run", "one-interrupt", "interrupt-error", "full-duplex", "close-during-run", "callback-originated-method", "run-done":
 		blockingCase(t, name, p)
@@ -345,7 +425,7 @@ func runCase(t *testing.T, name string) [6]int32 {
 	case "terminal-before-interrupt":
 		p.release, p.deliverStart = make(chan struct{}), make(chan struct{})
 		h := startHarness(t, p, true, true)
-		terminal := async(h, "turn.run", protocol.TurnRunRequest{SessionID: "product-session@local", Input: "fail"}, &TurnResult{})
+		terminal := async(h, "turn.run", protocol.TurnRunRequest{SessionID: "product-session@local", Input: "fail"}, &RunStatus{})
 		<-p.deliverStart
 		wantCode(t, h.Call(context.Background(), "turn.interrupt", target, &struct{}{}), protocol.NotRunning)
 		close(p.release)
@@ -443,7 +523,7 @@ func blockingCase(t *testing.T, name string, p *fakeProduct) {
 	}
 }
 
-func checkDelivery(t *testing.T, h *rpc.Conn, disposition string) {
+func checkDelivery(t *testing.T, h *workerHarness, disposition string) {
 	var receipt DeliveryReceipt
 	check(t, h.Call(context.Background(), "message.deliver", delivery, &receipt) == nil && receipt.Disposition == disposition, "receipt = %#v", receipt)
 }

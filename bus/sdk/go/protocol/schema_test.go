@@ -117,12 +117,13 @@ func validateClosedFixture(definition string, raw []byte) error {
 		"MessageSendRequest": "message.send", "MessageDeliverRequest": "message.deliver", "LaneDescribeRequest": "lane.describe",
 		"LaneSpawnRequest": "lane.spawn", "SessionOpenRequest": "session.open", "TurnRunRequest": "turn.run",
 		"TurnInterruptRequest": "turn.interrupt", "SessionCloseRequest": "session.close",
+		"RunRef": "turn.ack", "ReadRequest": "turn.status", "WaitRequest": "turn.wait", "ExecuteRequest": "turn.execute", "TurnReady": "turn.ready",
 	}
 	results := map[string]string{
 		"SessionHelloResult": "session.hello", "SessionSupersededResult": "session.superseded", "SessionListResult": "session.list",
 		"MessageSendResult": "message.send", "MessageDeliverResult": "message.deliver", "DeliveryReceipt": "message.deliver",
 		"LaneDescribeResult": "lane.describe", "LaneSpawnResult": "lane.spawn", "SessionOpenResult": "session.open",
-		"TurnRunResult": "turn.run", "TurnInterruptResult": "turn.interrupt", "SessionCloseResult": "session.close",
+		"RunStatus": "turn.run", "TurnInterruptResult": "turn.interrupt", "SessionCloseResult": "session.close",
 	}
 	if method := params[definition]; method != "" {
 		_, err := DecodeParams(method, raw)
@@ -133,6 +134,15 @@ func validateClosedFixture(definition string, raw []byte) error {
 		return err
 	}
 	switch definition {
+	case "TurnRunResult":
+		var value TurnResult
+		if err := validateDefinition("TurnRunResult", raw); err != nil {
+			return err
+		}
+		return DecodeJSON(raw, &value)
+	case "LanePolicy":
+		_, err := DecodeResult("lane.spawn", wrap(`{"session_id":"id@local","policy":`, raw, `}`))
+		return err
 	case "HostProducts":
 		_, err := DecodeResult("session.list", wrap(`{"sessions":[],"hosts":[`, raw, `]}`))
 		return err
@@ -177,6 +187,8 @@ func TestSchemaDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"DeliveryReceipt", "DeliverySource", "ExtraArgument", "HostProducts", "LaneDescribeRequest", "LaneDescribeResult", "LaneSpawnRequest", "LaneSpawnResult", "MessageDeliverRequest", "MessageDeliverResult", "MessageSendDelivery", "MessageSendRequest", "MessageSendResult", "RPCError", "RPCErrorResponse", "SessionCloseRequest", "SessionCloseResult", "SessionHelloRequest", "SessionHelloResult", "SessionListRequest", "SessionListResult", "SessionOpenOptions", "SessionOpenRequest", "SessionOpenResult", "SessionSummary", "SessionSupersededRequest", "SessionSupersededResult", "SpawnFailedData", "TurnInterruptRequest", "TurnInterruptResult", "TurnRunRequest", "TurnRunResult"}
+	want = append(want, "ExecuteRequest", "LanePolicy", "ReadRequest", "RunRef", "RunStatus", "TurnReady", "WaitRequest")
+	slicesSort(want)
 	got := make([]string, 0, len(root.Definitions))
 	for name := range root.Definitions {
 		got = append(got, name)

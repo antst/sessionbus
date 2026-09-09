@@ -8,7 +8,10 @@ const METHODS = Object.freeze({
   "session.list": ["SessionListRequest", "SessionListResult", "client"], "message.send": ["MessageSendRequest", "MessageSendResult", "client"],
   "message.deliver": ["MessageDeliverRequest", "MessageDeliverResult", "daemon"], "lane.describe": ["LaneDescribeRequest", "LaneDescribeResult", "client"],
   "lane.spawn": ["LaneSpawnRequest", "LaneSpawnResult", "client"], "session.open": ["SessionOpenRequest", "SessionOpenResult", "daemon"],
-  "turn.run": ["TurnRunRequest", "TurnRunResult", "both"], "turn.interrupt": ["TurnInterruptRequest", "TurnInterruptResult", "both"], "session.close": ["SessionCloseRequest", "SessionCloseResult", "both"],
+  "turn.run": ["TurnRunRequest", "RunStatus", "client"],
+  "turn.start": ["TurnRunRequest", "RunRef", "client"], "turn.execute": ["ExecuteRequest", "RunRef", "daemon"],
+  "turn.status": ["ReadRequest", "RunStatus", "both"], "turn.wait": ["WaitRequest", "RunStatus", "both"],
+  "turn.ack": ["RunRef", "SessionCloseResult", "both"], "turn.ready": ["TurnReady", "SessionCloseResult", "client"], "turn.interrupt": ["TurnInterruptRequest", "TurnInterruptResult", "both"], "session.close": ["SessionCloseRequest", "SessionCloseResult", "both"],
 });
 const MESSAGES = Object.freeze({
   "-32600": "invalid_frame", "-32602": "invalid_hello", "-32603": "internal", "-32001": "unknown_session", "-32002": "not_connected", "-32003": "busy", "-32004": "not_running", "-32005": "already_connected", "-32007": "unknown_product", "-32008": "unsupported_open_field", "-32009": "spawn_failed", "-32010": "timeout", "-32011": "not_committed", "-32012": "superseded", "-32013": "name_taken", "-32014": "unknown_host", "-32015": "forward_lost",
@@ -27,12 +30,12 @@ class Connection {
   }
   get signal() { return this.controller.signal; }
   async call(method, params, signal, observed) {
-    const spec = METHODS[method]; if (!spec) throw new Error("invalid method"); if (signal?.aborted) throw signal.reason || new Error("aborted"); const id = ++this.next; if (!Number.isSafeInteger(id)) throw new Error("request id space exhausted");
+    const spec = METHODS[method]; if (!spec) throw new Error("invalid method"); if (signal?.aborted) throw signal.reason || new Error("aborted"); if (this.pending.size >= 256) throw new ProtocolError({ code: -32003, message: "busy" }); const id = ++this.next; if (!Number.isSafeInteger(id)) throw new Error("request id space exhausted");
     let accept, reject; const result = new Promise((yes, no) => { accept = yes; reject = no; }); this.pending.set(id, { method, accept, reject, observed });
     const response = result.then((value) => [true, value], (error) => [false, error]);
-    const abort = () => { if (this.pending.delete(id)) reject(signal.reason || new Error("aborted")); }; signal?.addEventListener("abort", abort, { once: true });
+    const abort = () => { const pending = this.pending.get(id); if (pending) { pending.drain = true; pending.observed = undefined; reject(signal.reason || new Error("aborted")); } }; signal?.addEventListener("abort", abort, { once: true });
     try { await this._send({ jsonrpc: "2.0", id, method, params: JSON.parse(encode(spec[0], params)) }); const [ok, value] = await response; if (!ok) throw value; return value; }
-    catch (error) { this.pending.delete(id); throw error; }
+    catch (error) { if (!this.pending.get(id)?.drain) this.pending.delete(id); throw error; }
     finally { signal?.removeEventListener("abort", abort); }
   }
   result(request, value) { return this._send({ jsonrpc: "2.0", id: request.id, result: JSON.parse(encode(METHODS[request.method][1], value)) }); }
@@ -59,6 +62,7 @@ class Connection {
     }
     const pending = this.pending.get(frame.id); if (!pending) return false; this.pending.delete(frame.id);
     if (!(frame.error ? validate("RPCError", frame.error) : validate(METHODS[pending.method][1], frame.result))) { pending.reject(new Error("invalid frame")); return false; }
+    if (pending.drain) return true;
     try { if (!frame.error) pending.observed?.(); } catch (error) { pending.reject(error); return false; }
     (frame.error ? pending.reject : pending.accept)(frame.error ? new ProtocolError(frame.error) : frame.result);
     return true;
