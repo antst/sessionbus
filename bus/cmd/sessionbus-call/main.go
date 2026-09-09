@@ -68,6 +68,8 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	})
 	if err == nil {
 		defer peer.Shutdown()
+		stopDeadline := context.AfterFunc(ctx, peer.Shutdown)
+		defer stopDeadline()
 		select {
 		case <-peer.Ready():
 		case <-ctx.Done():
