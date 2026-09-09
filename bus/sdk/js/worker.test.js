@@ -363,3 +363,25 @@ test("unnamed peer first title, removal and written delivery retain captured ide
   release.resolve(); assert.deepEqual(await delivering, { disposition: "written" });
   assert.deepEqual(captured.identity, initial); assert.deepEqual(captured.request, request); assert.equal(captured.signal.aborted, true);
 });
+
+test("worker joins in-flight Open and exactly one successful Close after EOF", async (t) => {
+  for (const fails of [false, true]) await t.test(fails ? "failed-open-cleanup" : "late-success", async (t) => {
+    const product = new FakeProduct(), entered = deferred(), release = deferred();
+    product.closeStart = deferred(); product.closeEnd = deferred();
+    product.open = async () => { product.calls[1]++; entered.resolve(); await release.promise; if (fails) throw new Error("native Open failed after cleanup"); return { session_id: "product-session" }; };
+    const { worker, daemon, serving } = await harness(t, product, { open: false });
+    // Observe actual Serve cleanup without changing its adoption or scheduling.
+    const cleanupEntered = deferred(), closeProduct = worker._closeProduct.bind(worker);
+    worker._closeProduct = (...args) => { cleanupEntered.resolve(); return closeProduct(...args); };
+    let finished = false; serving.then(() => { finished = true; });
+    t.after(() => { release.resolve(); product.closeEnd.resolve(); });
+    const opening = daemon.call("session.open", openRequest).catch((error) => error);
+    await entered.promise; daemon.close(); await cleanupEntered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false, "serve finished while native Open was still in flight");
+    release.resolve();
+    if (!fails) { await product.closeStart.promise; assert.equal(finished, false, "serve finished before product.Close"); }
+    product.closeEnd.resolve(); await serving; await opening;
+    assert.equal(product.calls[5], fails ? 0 : 1);
+  });
+});

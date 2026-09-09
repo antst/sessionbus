@@ -87,6 +87,7 @@ type Worker struct {
 	run          *Run
 	closeRequest SessionCloseRequest
 	opened       atomic.Bool
+	openDone     chan struct{}
 	once         sync.Once
 	closed       chan struct{}
 }
@@ -146,7 +147,18 @@ func (w *Worker) handle(ctx context.Context, request *rpc.Request) {
 	case "session.superseded":
 		go func() { w.reply(w.conn.Result(request, struct{}{})); _ = w.conn.Close() }()
 	case "session.open":
-		go w.open(w.context, request)
+		// Register adoption on the reader before Open is scheduled. EOF cleanup
+		// must join this callback even if native success arrives after EOF.
+		w.mu.Lock()
+		if w.openDone != nil || ctx.Err() != nil || w.run != nil && w.run.done == nil {
+			w.mu.Unlock()
+			go w.answer(request, nil, protocol.InvalidFrame)
+			return
+		}
+		done := make(chan struct{})
+		w.openDone = done
+		w.mu.Unlock()
+		go func() { defer close(done); w.open(w.context, request) }()
 	case "turn.execute":
 		w.execute(request, nil)
 	case "turn.status", "turn.wait":
@@ -295,6 +307,12 @@ func (w *Worker) answer(request *rpc.Request, value any, code int) {
 }
 
 func (w *Worker) closeProduct(ctx context.Context) {
+	w.mu.Lock()
+	opening := w.openDone
+	w.mu.Unlock()
+	if opening != nil {
+		<-opening
+	}
 	w.once.Do(func() {
 		w.mu.Lock()
 		request := w.closeRequest
