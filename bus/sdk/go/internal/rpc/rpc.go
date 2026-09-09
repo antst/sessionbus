@@ -157,7 +157,7 @@ func (c *Conn) send(body []byte) error {
 }
 
 func (c *Conn) read() {
-	for {
+	for c.ctx.Err() == nil {
 		body, err := c.reader.ReadSlice('\n')
 		if err != nil {
 			c.close(err)

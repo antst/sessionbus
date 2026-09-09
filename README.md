@@ -11,6 +11,15 @@ The Go and JavaScript SDKs are MIT-licensed under
 [`bus/sdk/go/LICENSE`](bus/sdk/go/LICENSE) and
 [`bus/sdk/js/LICENSE`](bus/sdk/js/LICENSE).
 
+Go connection owners can use `NewConnection(fd, handler)` with an already
+connected `net.Conn`. The public `Connection` and `Request` aliases expose the
+existing validated duplex RPC implementation, including `Call`, `CallObserved`,
+`Begin`, `Result`, and `Error`. The owner controls registration and connection
+lifetime; there is no automatic reconnect. The non-nil handler and
+`CallObserved` callback run on the reader in frame order, so they must offload
+blocking work. `CallObserved` observes a valid decoded result before the next
+inbound frame is dispatched. `Close` closes the socket and cancels its context.
+
 Caller waits are cancellable: JavaScript `caller.wait(request, signal)` and
 `caller.action("wait", request, signal)` accept an `AbortSignal`; Go provides
 `caller.WaitContext(ctx, request)` and forwards the context from `Action`.
