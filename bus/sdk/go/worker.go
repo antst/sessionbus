@@ -329,8 +329,3 @@ func sessionEnvironment(worker bool) (string, string, error) {
 	}
 	return endpoint, token, nil
 }
-
-func truncate(text string) (string, bool) {
-	characters := []rune(text)
-	return string(characters[:min(len(characters), protocol.MaxTextRunes)]), len(characters) > protocol.MaxTextRunes
-}

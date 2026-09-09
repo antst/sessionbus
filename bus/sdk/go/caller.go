@@ -5,13 +5,9 @@ package sessionkit
 import (
 	"context"
 	"encoding/json"
-	"errors"
+
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
-
-const unavailableReason = "result unavailable, lane resumable"
-
-var ErrUnknownTurn = errors.New("unknown_turn")
 
 type callFunc func(context.Context, string, any, any) error
 type Caller struct{ call callFunc }

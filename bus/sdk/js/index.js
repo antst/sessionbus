@@ -130,7 +130,13 @@ class Worker {
     let timer, removeAbort;
     try {
       let timedOut = false;
-      const timeout = request.params.timeout_ms === undefined ? never : new Promise((resolve) => { timer = setTimeout(() => { timedOut = true; resolve(); }, request.params.timeout_ms); });
+      const timeout = request.params.timeout_ms === undefined ? never : new Promise((resolve) => {
+        const deadline = Date.now() + request.params.timeout_ms;
+        // Node clamps larger delays to 1ms. Preserve the explicit user deadline
+        // with maximum-length timer segments; this is not RPC cancellation polling.
+        const expire = () => { const remaining = deadline - Date.now(); if (remaining > 0) timer = setTimeout(expire, Math.min(remaining, 2147483647)); else { timedOut = true; resolve(); } };
+        timer = setTimeout(expire, Math.min(request.params.timeout_ms, 2147483647));
+      });
       const aborted = new Promise((resolve) => { const abort = () => resolve(); this.controller.signal.addEventListener("abort", abort, { once: true }); removeAbort = () => this.controller.signal.removeEventListener("abort", abort); });
       while (!this.controller.signal.aborted) {
         const record = this._find(request.params);

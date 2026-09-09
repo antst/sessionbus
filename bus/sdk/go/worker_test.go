@@ -282,7 +282,7 @@ func (h *workerHarness) Call(ctx context.Context, method string, params, result 
 	if method != "turn.run" {
 		if method == "session.close" {
 			h.mu.Lock()
-			h.mu.Unlock()
+			h.mu.Unlock() //nolint:staticcheck // Barrier: the earlier blocking run has written its read frame.
 		}
 		return h.Conn.Call(ctx, method, params, result)
 	}

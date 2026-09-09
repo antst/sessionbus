@@ -112,3 +112,16 @@ test("orderly close drains admitted read before product Close", async (t) => {
   assert.equal((await read).state, "done"); await closeEntered.promise; assert.equal(worker.waiters, 0);
   await assert.rejects(bus.call("turn.status", ref), code(-32003)); closeRelease.resolve(); await closing;
 });
+
+test("explicit wait beyond Node timer limit preserves requested deadline", async (t) => {
+  const release = deferred(), admitted = deferred();
+  const { bus } = await cursor(t, { run: async () => { await release.promise; return done; }, observe: (r) => { if (r.method === "turn.wait") admitted.resolve(); } });
+  await execute(bus);
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  let returned = false;
+  const reading = bus.call("turn.wait", { ...ref, timeout_ms: 2147483667 }).then((value) => { returned = true; return value; });
+  await admitted.promise;
+  t.mock.timers.tick(2147483647); await new Promise(setImmediate); assert.equal(returned, false);
+  t.mock.timers.tick(20); assert.equal((await reading).state, "running");
+  release.resolve(); assert.equal((await bus.call("turn.wait", ref)).state, "done");
+});
