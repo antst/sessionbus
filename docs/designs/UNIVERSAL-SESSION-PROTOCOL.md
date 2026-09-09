@@ -33,6 +33,11 @@ A request with a usable ID whose params or method are invalid receives its
 correlated `invalid_frame` response, or `invalid_hello` for `session.hello`,
 before the reader closes the connection. Without a usable ID the reader closes
 without writing. The reader never dispatches a later frame after either case.
+Cancellation retains the same outstanding correlation until its reply or connection
+closure, with its observer and caller result target disabled. Late replies are
+validated and drained. A reply already claimed by the reader wins cancellation.
+Already-cancelled calls submit nothing. Drains count toward the existing
+256-operation bound; no polling or eviction creates room.
 A response whose ID does not match an outstanding call is also an invalid frame:
 the receiver closes the connection and fails its pending calls once.
 
@@ -100,9 +105,11 @@ Turn input and result strings, `message.send.message`, and
 `message.deliver.body` are each limited to 262,144 decoded characters through
 the closed generated types. The raw 1 MiB framing guard remains an earlier,
 independent byte limit because UTF-8 width and JSON escaping are not character
-counts. A worker kit truncates a longer native turn result to 262,144 characters
-and sets `truncated:true`. Both
-kits emit compact JSON with no insignificant whitespace.
+counts. Before retention, the worker validates native results against the schema
+and the full reply envelope using the largest permitted request ID. Invalid or
+oversized output becomes `unavailable`; the kit neither fabricates a failed native
+terminal nor truncates a successful answer. Product-reported `truncated:true`
+remains permitted when it describes native output. Both kits emit compact JSON.
 
 The closed parameter and result shapes are authoritative in
 `bus/sdk/go/protocol/session.schema.json`, exported as bytes by each public SDK.
@@ -110,19 +117,19 @@ An implementation validates each frame against that schema with a small
 interpreter and no validation library, then decodes it into the closed types.
 Unknown fields, missing or null required fields, and out-of-range values are
 rejected before product code runs. The shared fixture file tests the same
-definitions in Go and JavaScript. The schema's
-**440-line cap** includes the optional federated product-discovery and bounded
-turn-result shapes; this
-is list data, never launch authority.
+definitions in Go and JavaScript. Optional product discovery is list data, never
+launch authority. The same schema defines independent lane policy and stable
+run collection within its existing **440-line cap**.
 
-Authorization is visibility: a session may run, interrupt, close, or message a
-lane exactly when it can see that lane through a shared group in `session.list`.
-This trusted protocol has no ownership field or per-caller ACL.
+Authorization is visibility: a session may start, read, acknowledge, interrupt,
+close, or message a lane exactly when it can see it through a shared group in
+`session.list`. Lifetime ownership is separate: it determines cleanup on owner
+exit, never an additional per-caller access restriction.
 Peer identity and groups are asserted rather than attested on the trusted local
 socket, and federation trusts the remote daemon's assertions. No peer
 credentials, signatures, or other security machinery belong in this protocol.
 
-There are eleven methods.
+There are seventeen methods.
 
 #### `session.hello`
 
@@ -131,7 +138,9 @@ supplies its product-native bare `session_id` and an optional unqualified `name`
 `groups` and `info`; the name part may itself contain `@` or `/`. The daemon
 qualifies the ID and any present name with its effective host before installing the peer. A worker instead supplies a
 one-use `launch_token`, its supported non-identity open fields, its ordered
-extra-argument descriptions, and optionally the product version. The branches are mutually
+extra-argument descriptions, optionally the product version, and optional
+`supports_message_run` (default false). The daemon and kit reject
+`idle_message:"run"` before native Open unless this capability is true. The branches are mutually
 exclusive: a request with both discriminants or neither is invalid. A worker
 sends hello only after its product and plugin are app-ready, so hello success is
 the sole readiness fact. A peer ID matching a durable lane row is invalid. A
@@ -181,7 +190,8 @@ race is bounded and cannot flap indefinitely.
 A connected session sends `session.list` with an optional `session_id` filter.
 The result contains the matching visible sessions, or all visible sessions when
 the filter is absent. Each item reports canonical `id@host` and, when named, `name@host`, whether its one
-connection is open, and whether one `turn.run` is outstanding. The host is already carried by both canonical identities, so no
+connection is open, and whether one run admission is active. Lane summaries also include normalized
+`policy`; peers have no lane policy. The host is already carried by both canonical identities, so no
 separate summary host field exists. This single method
 replaces peer listing, lane listing, and lane status. Its optional `hosts` array advertises product names by host. Whenever
 the local optional non-empty product list is configured, the daemon's effective
@@ -257,7 +267,8 @@ readiness object or readiness phase.
 
 A session sends `lane.spawn` either with a caller-chosen name leaf, product, open
 options, optional `extra_groups`, and optional `host` for a new lane, or with
-`resume_session_id` alone for a durable offline lane. A peer's private group is
+`resume_session_id` for a durable offline lane. Both forms accept the independent
+policy fields below; native open options cannot be overridden on resume. A peer's private group is
 `session:<id@host>`. A lane's private group is `<parent private group>/<leaf>`;
 its default groups are exactly its parent's private group and that new private
 group, plus `extra_groups`. The parent's other memberships are not inherited,
@@ -276,10 +287,10 @@ entire transaction there. The row exists only on that authoritative target.
 Resume never carries `host`: its session ID already selects the host. The
 authoritative daemon resolves and starts the worker, waits for hello, sends
 `session.open`, durably
-commits the product-returned session ID, and only then returns `{session_id}`. The row
+commits the product-returned session ID, and only then returns `{session_id,policy}`. The row
 stores the original closed open-options object as one JSON value. Resume replays
 that stored value unchanged, preserving `arguments` order, with
-`resume_session_id`; this version permits no resume overrides. The one
+`resume_session_id`; policy selection is separate from immutable native open options. The one
 spawn/open transaction timeout covers all of those steps.
 Unsupported supplied
 open fields, an invalid session ID, exit, or timeout fail truthfully and do not
@@ -296,12 +307,39 @@ exists`. The lane owner commits while handling the open response, before it
 handles the next inbox frame. An exit drains the closed socket first, so an
 already-written valid open response can commit; EOF first fails the spawn.
 
+The normalized `policy` contains `persistent`, `auto_close_ms`, `idle_message`,
+`notify`, and, when applicable, `owner_session_id` or `notify_target`.
+Fresh defaults are `persistent:false`, `auto_close_ms:60000`, and
+`idle_message:"stage"`. Zero disables auto-close; positive values are milliseconds
+up to 9223372036854. Persistence controls owner-exit cleanup independently of
+terminal auto-close and idle-message behavior. All four persistence/auto-close
+combinations are supported. Open performs no input and arms no deadline.
+
+On resume, persistence survives and may be promoted, never demoted. A
+nonpersistent lane acquires the resuming owner. Omitted auto-close resets to
+60000; custom or disabled grace must be supplied again. Omitted idle-message
+policy inherits. Parent-owned lanes notify their current owner by default;
+`notify:false` disables that delivery. An explicit `notify_target` may name that
+same owner; a different target is rejected.
+Fresh persistent lanes have no implicit target: `notify_target` enables it,
+`notify:true` requires a target, and `notify:false` clears it. A simultaneous
+false and target is invalid. Persistent resume preserves an omitted target;
+promotion preserves the prior enabled owner destination as its explicit target.
+
+The authenticated spawning caller owns nonpersistent lifetime. Same-ID peer
+supersession atomically transfers that lifetime before retiring the old
+attachment. Name updates preserve it; different-ID replacement or actual detach
+ends it. A subsequent reconnect cannot revive cleanup already admitted.
+Publication rechecks owner lifetime, including loss during provisional Open.
+The worker launch-token claimant and visibility groups are not lifetime owners.
+
 #### `session.open`
 
 The daemon sends `session.open` only to a token-authenticated worker. It carries
 always-present canonical composed `name` and `groups`, optional
 `resume_session_id`, and one closed `open` object containing only the
-non-identity options accepted by `lane.spawn`. Values of `permission_mode`,
+non-identity options accepted by `lane.spawn`, plus normalized `policy` outside
+that native options object. Values of `permission_mode`,
 `model`, and `reasoning_effort` are product-native strings passed through
 verbatim: the daemon checks only shape and declared field support, while the
 worker rejects an unsupported value as `spawn_failed` with
@@ -314,25 +352,80 @@ and returns `{session_id}`. A successful result is
 the commit point that turns the provisional worker connection into lane
 presence. A probe never receives this method.
 
-#### `turn.run`
+#### `turn.start`, `turn.run`, and `turn.execute`
 
-Either a caller sends `turn.run` to the daemon or the daemon forwards the same
-request to the addressed lane. Its parameters are exactly `{session_id,input}`.
-The worker permits one outstanding call, invokes the native run primitive, and
-answers only with the terminal outcome. The outstanding RPC is the running
-fact; no start acknowledgement, wait method, status update, projection stream,
-or collector exists. The daemon stores no turn result.
+A caller sends `turn.start {session_id,input}`. The daemon reserves its one run
+slot and sends `turn.execute {session_id,run_id,input}` to the resident worker.
+The worker reserves capacity before native dispatch and acknowledges a canonical
+`RunRef` `{session_id,run_id}`. This is worker acceptance, not native message
+admission or a terminal. `turn.run` has the same caller input and composes that
+admission with a non-consuming terminal wait, returning `RunStatus` below.
+Neither operation consumes the result. New admission cancels the previous
+terminal deadline; a proven pre-admission refusal restores the exact prior
+deadline and reuses its provisional sequence. Receipt failure after admission
+never rolls back the run.
 
-Bounded agent-tool behavior is caller-kit policy, not wire. The Go and JavaScript
-caller kits keep `turn.run` outstanding and expose local `start`, `wait(timeout)`,
-and `status` operations with a local-only turn ID. A wait timeout never cancels
-the wire call. If the caller process disappears, the daemon drains and discards
-the result. The caller kit reports `result unavailable, lane resumable`; the
-caller resumes and asks the lane again or reruns a non-AI tool.
-The worker kit is full-duplex: its reader never blocks on the native run, so
-delivery, interrupt, and worker-originated session methods dispatch concurrently
-with it. A terminal response may include `truncated:true` only when its result
-was shortened to the wire limit.
+Run IDs are an opaque worker-lifetime generation plus contiguous positive
+sequence (`generation/1`, `generation/2`, ...), allocated by the daemon and
+validated by the kit before native dispatch. Only refused provisional IDs may
+be reused. Returned session IDs remain canonical across federation. Resume
+starts a new generation and does not recover answers from the retired worker.
+
+Idle delivery with `idle_message:"stage"` uses ordinary `deliver` and starts no
+run or timer. With `idle_message:"run"`, the daemon reserves the same run slot
+and adds its private `run_id` to the original `message.deliver`. The Worker
+invokes `RunInput` with exactly one text input or full delivery seed. The seed
+preserves original message ID, source and body; its private transport run ID may
+be removed before the callback. `Run.ReportDelivery` answers that original RPC
+once with the observed native receipt and may block on its transport write.
+Adapters must call it outside native reader locks. Missing or uncertain receipt
+uses Internal/no_receipt, not a guessed refusal. Invalid receipt encoding or
+write failure closes the connection so the original request cannot hang.
+Active delivery keeps the ordinary native injection/staging path and Run token.
+
+#### `turn.status`, `turn.wait`, and `turn.ack`
+
+The Worker SDK owns one ordered cursor, at most 256 run records, with terminal
+bodies held only there. The daemon keeps admission/policy metadata and routes
+reads; the Caller keeps no run map. `turn.status {session_id,run_id?}` reads a
+snapshot; an omitted run ID selects the oldest unconsumed record.
+`turn.wait {session_id,run_id?,timeout_ms?}` waits for that same non-consuming
+snapshot to become terminal. An explicit timeout may return running; omission
+waits without a local polling limit. Both return `{session_id,run_id,state}`:
+`running` has no result, `done` includes the native terminal `result`, and
+`unavailable` includes a nonempty `reason` without a fabricated native terminal.
+A missing or retired record is `unknown_session` while disconnected lanes use
+`not_connected`. At most 256 active reads are admitted, independently of the
+existing transport correlation bound. Capacity is reserved before new work and
+older output is never silently evicted.
+
+`turn.ack {session_id,run_id}` consumes only the oldest terminal record and
+returns `{}`. A repeat acknowledgment of an issued, already consumed ID in the
+same generation is idempotent; future/nonexistent IDs are not consumed IDs.
+Acknowledging a later retained record is busy. Status, wait, cancellation and
+collector replacement do not consume output or reset grace. CLI/stdio callers
+acknowledge after successful complete output emission. Pre-cancelled ack submits
+nothing; once submitted, the kit settles acknowledgment despite later caller
+cancellation. A lost ack response leaves consumption uncertain. Ack means cursor
+consumption, not proof a native model or display received the answer.
+
+#### `turn.ready`
+
+The worker sends `{session_id,run_id,state,outcome? ,reason?}` with terminal
+metadata only: done includes native outcome, unavailable includes reason.
+The daemon releases that admission and, for a native terminal including failed
+or interrupted, arms the independent auto-close deadline. `unavailable` without
+an observed native terminal releases the slot but arms no new grace. The worker publishes
+its cursor on the control acknowledgment, before dispatching a subsequent frame.
+No terminal body is copied into the daemon. The control acknowledgment certifies
+processing, not native receipt or output collection.
+
+When notification is enabled, the daemon sends an ordinary peer message under
+the actual lane identity to its owner or persistent notify target. The body is
+only a lane/run collection pointer, never the answer or admission receipt.
+The receiving product's normal native delivery policy applies, including its
+own stage/run selection. No-notify omits it. Failed/unavailable delivery consumes
+nothing, extends no deadline and creates no retained notification or retry.
 
 #### `turn.interrupt`
 
@@ -349,11 +442,11 @@ remains unresponsive, the caller closes the session.
 Either a caller sends `session.close` to the daemon or the daemon sends it to
 the addressed lane. The request has optional `forget`, default false. The
 worker asks the product to close and always returns `{}`; a product cleanup
-error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from the daemon sending this
-request, bounds the entire close path. A result before the bound makes the
+error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from daemon close admission, bounds the entire close path. A result before the bound makes the
 daemon close the socket, send TERM, and reap; expiry makes it close the socket,
 send KILL, and reap with no second waiting period. The spawn/open transaction
-bound and `closeBound` are the only two lane-path timeouts.
+bound and `closeBound` remain the two operation bounds; the independent
+terminal auto-close deadline is lifecycle policy.
 
 If close arrives during a run, the worker kit interrupts once, awaits that same
 run's terminal result, and then closes natively; the whole sequence must fit
@@ -363,9 +456,8 @@ fabricates an interrupted result.
 
 After orderly close or unrequested EOF, the durable row is offline and
 resumable. `forget:true` deletes it only after the worker is stopped. There is no
-closed row state and no daemon auto-archive policy. A future
-protocol may add an idle-close option implemented wholly by a product kit, but
-this version has none.
+closed row state. Independent terminal auto-close uses this same Close path;
+product adapters own no archival timer.
 
 ### 1.2 Edge rules
 
@@ -388,8 +480,8 @@ this version has none.
   connection. The kit adds no additional commit buffer, gate, or
   acknowledgement. After commit, the same connection is the lane's presence
   and uses those ordinary methods; there is no tool frame.
-- A second `turn.run` while one is outstanding returns busy. There is one
-  running boolean in a product kit and one pending RPC in the daemon.
+- A second explicit start/run while the native slot is occupied returns busy.
+  Message wake uses that same slot, never a second scheduler.
 - `lane.spawn` with `resume_session_id` naming a connected row returns
   `already_connected`; lanes never use supersession to manufacture a second
   worker connection.
@@ -418,19 +510,20 @@ this version has none.
   child, so abrupt wrapper death cannot free the lock while a surviving child
   writes; contention is `spawn_failed` with `session busy`. A native product's
   own mechanism qualifies only when it excludes competing processes.
-- `turn.run`, `turn.interrupt`, or `session.close` addressed to a durable row
+- Run start/read/wait/ack, `turn.interrupt`, or `session.close` addressed to a durable row
   without a connection returns `not_connected`. Resume is an explicit
   `lane.spawn`; a caller kit may compose that automatically without changing the
   wire.
 - `turn.interrupt` while no run is outstanding returns not-running. An accepted
   interrupt does not promise that the native product has already stopped.
-- Caller timeout or disappearance does not cancel the forwarded run. The daemon
-  drains and discards its response. Result loss at an abandoned reply sink is
-  accepted; the kit reports the lane as resumable and the caller re-asks or reruns.
+- Collector timeout/disappearance leaves the Worker cursor intact while the
+  worker remains active. Actual lifetime-owner exit separately closes a
+  nonpersistent lane and invalidates its cursor. Persistence does not disable
+  auto-close or enable wake.
 - Worker EOF cancels every callback, never invokes interrupt afterward, calls
   native close once if open committed, fails pending calls exactly once, and
   leaves the durable row offline.
-- `session.close` has one 10-second deadline from request send through process
+- `session.close` has one 10-second deadline from close admission through process
   reap. Deadline expiry closes the socket, sends KILL, and adds no grace period.
 - Same-identity replacement atomically makes the new peer current, sends
   `session.superseded` to the old exact connection, and prevents reconnection by
@@ -450,8 +543,10 @@ This protocol deliberately does not compensate for five losses. A daemon crash
 before commit can orphan native files; workers exit on EOF and those files are
 garbage, not state. A successful spawn reply can be lost with its caller; the
 caller kit lists by name before spawning again. A caller can lose a completed
-turn result with its reply sink; it re-asks the resumed AI lane or reruns the
-tool. A wrapper can die after truthfully accepting a queued
+turn result after worker retirement, including explicit/automatic/owner close;
+resume does not recover that old answer. Collector loss alone retains it while
+the worker lives. No daemon restart or supervisor-replacement output recovery
+is implemented by this memory-only cursor. A wrapper can die after truthfully accepting a queued
 delivery but before the next turn; that private queue is not durable protocol
 state. After a daemon crash, an old worker may take milliseconds to observe EOF
 while the restarted daemon spawns a resume; a persisted-PID reap barrier is
@@ -463,29 +558,50 @@ refused state, and both workers must obey EOF and native-session exclusivity.
 | --- | --- | --- |
 | `session.hello` | `session.hello` | Survives and gains the token-discriminated worker branch. |
 | `lane.worker.hello` | `session.hello` | Merged; two first-frame methods would duplicate framing and validation. |
-| `session.update` | — | Dies; connection presence and outstanding `turn.run` are the complete live facts. |
+| `session.update` | — | Dies; connection presence, the current admission, and `turn.ready` supply live facts. |
 | `session.superseded` | `session.superseded` | Survives unchanged so replacement is terminal rather than a reconnect flap. |
 | `peers.list` | `session.list` | Merged with lane list and status because peers and lanes are sessions. |
 | `message.send` | `message.send` | Survives as the single outbound messaging operation. |
 | `lane.doctor` | `lane.describe` | Renamed because hello success reports support; there is no readiness state. |
 | `lane.list` | `session.list` | Merged because a lane is a session row plus an optional connection. |
-| `lane.start` | `lane.spawn` + `turn.run` | Creation and the first turn are two ordinary composable operations. |
+| `lane.start` | `lane.spawn` + `turn.start` | Creation and the first turn are two ordinary composable operations. |
 | `lane.run` | `lane.spawn` + `turn.run` | Synchronous convenience belongs in the caller kit, not the wire. |
 | `lane.resume` | `lane.spawn` + `turn.run` | `resume_session_id` selects the durable row; running remains separate. |
 | `lane.steer` | `message.send` / `message.deliver` | Steering is mandatory message injection or truthful wrapper queuing. |
-| `lane.wait` | — | Dies; `turn.run` is the one outstanding terminal-result RPC. |
-| `lane.status` | `session.list` | A filtered list returns connection and running facts. |
+| `lane.wait` | `turn.wait` | Non-consuming read of the resident Worker cursor. |
+| `lane.status` | `session.list` / `turn.status` | Presence and retained run status remain distinct. |
 | `lane.interrupt` | `turn.interrupt` | Merged with the worker-side interrupt under one end-to-end shape. |
 | `lane.archive` | `session.close` | Explicit lifetime termination is one session operation. |
 | `message.deliver` | `message.deliver` | Survives; its result becomes the truthful closed delivery receipt. |
-| `lane.turn.start` | `turn.run` | Merged with wait into one RPC whose lifetime is the turn. |
-| `lane.turn.wait` | `turn.run` | Dies as a separate collection protocol. |
+| `lane.turn.start` | `turn.start` | One admission returning a stable RunRef. |
+| `lane.turn.wait` | `turn.wait` + `turn.ack` | Explicit non-consuming read and acknowledged consumption. |
 | `lane.turn.interrupt` | `turn.interrupt` | Merged with the caller-side operation. |
 | `lane.session.archive` | `session.close` | Merged with the caller-side lifetime operation. |
 
-The closed method authority therefore shrinks from twenty-one methods to eleven.
+The closed method authority therefore shrinks from twenty-one methods to seventeen, including the internal worker
+execute/ready pair and explicit retained-result acknowledgment.
 
-### 1.4 Error authority
+### 1.4 Federation lifetime controls
+
+Forwarded caller metadata includes origin-minted `owner_lifetime` and the hub's
+unique `source_attachment` epoch. The hub validates source identity against the
+TLS host and stamps its own epoch; an origin cannot choose that stamp.
+`federation.owner_end {host,owner_session_id,owner_lifetime}` is routed to the
+registered destination and gains `source` and `source_attachment` downstream.
+Hub-only `federation.host_end {host,source_attachment}` ends every lifetime from
+that exact departed attachment on every removal path. Their `{}` responses mean
+lifecycle event admitted, not native process termination. They carry no output.
+
+Origin forward and owner-end enqueue are serialized. The hub preserves stream
+order; destination records ownership before admitting later end events and
+rechecks it at publication. Same-ID supersession needs no extra control frame.
+Control queue/write failure closes the link instead of dropping cleanup.
+Destination hub loss ends all remote nonpersistent owners. Persistent lanes
+ignore owner loss and retain their independent auto-close deadlines. This is
+connectivity-lifetime policy, not proof of remote process death; no lease,
+polling, replay or reconnect subsystem is added.
+
+### 1.5 Error authority
 
 Every correlated failure uses exactly one numeric JSON-RPC code and symbolic
 message from this table. Kits match the code, never free-form text.
@@ -500,13 +616,13 @@ and closes the connection without writing one.
 | ---: | --- | --- |
 | `-32600` | `invalid_frame` | Any method whose envelope, closed params, or daemon-checked identity grammar is invalid, but only when a valid request ID is recoverable. This includes a composed lane name beyond 128 characters. |
 | `-32602` | `invalid_hello` | `session.hello` when its union, protocol, identity, or token is invalid. |
-| `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, `turn.run`, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
-| `-32002` | `not_connected` | `turn.run`, `turn.interrupt`, or `session.close` when a durable row has no connection. |
-| `-32003` | `busy` | `turn.run` when the target already has an outstanding run; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
+| `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, run start/read/wait/ack, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
+| `-32002` | `not_connected` | Run start/read/wait/ack, `turn.interrupt`, or `session.close` when a durable row has no connection. |
+| `-32003` | `busy` | Run admission when the target already has an outstanding run or 256 retained records; out-of-order ack; a cursor read after close admission; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
 | `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run. |
 | `-32005` | `already_connected` | Resume `lane.spawn` when the durable row already has its worker connection. |
 | `-32007` | `unknown_product` | `lane.describe` or new `lane.spawn` when the product token is invalid or its binary is absent from the target host's service PATH. |
-| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration. |
+| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration, or `idle_message:"run"` is selected without `supports_message_run:true`. |
 | `-32009` | `spawn_failed` | `lane.describe` or `lane.spawn` when exec, hello, open, or native creation fails before commit. |
 | `-32010` | `timeout` | `lane.describe` or `lane.spawn` when its one spawn/open transaction bound expires. |
 | `-32011` | `not_committed` | Any worker-originated client-to-daemon session method received after hello but before product-session-ID commit. |
@@ -514,7 +630,7 @@ and closes the connection without writing one.
 | `-32013` | `name_taken` | New `lane.spawn` when another row on that host already holds the requested composed name. |
 | `-32014` | `unknown_host` | `lane.describe` or new `lane.spawn` naming an unfederated `host`, or any canonical identity input whose host part is neither local nor connected. |
 | `-32015` | `forward_lost` | A one-hop federated request whose transport ends before its response; the request may or may not have been applied on the target host and is never retried. |
-| `-32603` | `internal` | The daemon's own shutdown or durable row-file operation fails; `data` carries its error text. A product callback never raises this code. |
+| `-32603` | `internal` | The daemon's own shutdown or durable row-file operation fails; `data` carries its error text. An explicit uncertain-delivery callback may also use this code; it never certifies native refusal. |
 
 ## 2. Daemon
 
@@ -523,10 +639,11 @@ and closes the connection without writing one.
 The daemon is a router around one directory and a set of durable row files. It
 does not know how any product creates a session, runs a turn, injects a message,
 or closes. Native
-products and wrappers expose those operations through the eleven methods in
+products and wrappers expose those operations through the seventeen methods in
 Section 1. The daemon contains no product switch, lane actor, product driver,
-capability interface, status projection, result collector, archive
-transaction, or idle timer.
+product capability interface, output ledger, or product archive transaction.
+Generic lane policy owns one terminal auto-close deadline and invokes ordinary
+Close; it never interprets native state.
 
 Only lanes have durable rows. A row has exactly these columns:
 
@@ -538,6 +655,7 @@ Only lanes have durable rows. A row has exactly these columns:
 | `groups` | Full resume-membership recipe containing the parent's private group, the recursively composed `<parent private group>/<leaf>`, and explicit `extra_groups`; no other parent membership is inherited. |
 | `open` | The original validated `SessionOpenOptions` value, re-marshalled unchanged on resume with `arguments` order preserved. |
 | `created_at` | Daemon timestamp assigned when the row commits. |
+| `policy` | Normalized independent lifetime, auto-close, idle-message and notification selection. Older rows without it receive fresh defaults on resume. |
 
 Each row is one JSON file named `<sha256(session_id)>.json`. A commit writes and
 syncs a temporary file, renames it to that name, and syncs the containing
@@ -557,7 +675,9 @@ is a peer.
 
 The in-memory directory indexes canonical IDs, canonical names, and launch
 tokens. Each entry contains its row data, current attachment, claimed and
-running facts, and an identity-lifetime `done` channel. One short directory
+running facts, an identity-lifetime `done` channel, and a parent-lifetime reference.
+Local lifetime tokens survive same-ID replacement; remote lifetimes also bind
+the origin host and its authenticated hub attachment epoch. One short directory
 mutex protects those registry facts together. It is held only for lookup,
 insert, replacement, removal, claim, and a copied list snapshot. No socket,
 process, disk, channel wait, or callback runs while it is held, and it never
@@ -780,9 +900,9 @@ resolution and deduplication happen first on a copied directory snapshot.
 The target owner admits requests in inbox order. Its pending map contains at
 most 256 unanswered worker calls; a dequeued 257th call returns `busy`. This is
 a separate limit from the mixed-event inbox and must not be described as 512
-calls. For `turn.run`, the owner also rejects a second outstanding run, records
-the pending call, updates the directory's running projection, and sends the
-worker frame before it handles a following interrupt. `turn.interrupt`,
+calls. For direct or message-seeded admission, the owner also rejects a second
+outstanding run, reserves the contiguous run ID, updates the directory's running
+projection, and sends the worker frame before handling a following interrupt. `turn.interrupt`,
 `session.close`, and `message.deliver` use the same path. The worker kit owns the
 single native interrupt invocation. A `session.close` operation retains its
 pending slot through process cleanup.
@@ -795,7 +915,8 @@ identity becomes `not_connected`, rendered as `no_receipt` for delivery. Worker
 EOF settles every remaining operation once. A late response is unmatched and
 dropped. Caller cancellation ends only its reply helper; it neither removes the
 target's pending operation nor cancels product work. A later result is drained
-and discarded, and the daemon stores no product-owned turn output.
+and discarded at that abandoned reply sink; the Worker cursor independently
+retains output until ack or retirement. The daemon stores no product-owned output.
 
 A claimed row rejects every new run, interrupt, close, resume, or forget with
 `busy`; it never waits. Delivery is not part of that exclusion: a delivery to a
@@ -1003,7 +1124,7 @@ The admitted mapping is closed:
 | `lane.describe` | Its explicit non-local `host`; the destination performs the ordinary local describe path. |
 | Fresh `lane.spawn` | Its explicit non-local `host`; the destination composes parent/leaf from captured `from.name` and `from.private_group`. |
 | Resume `lane.spawn` | The last-`@` suffix of canonical `resume_session_id`. |
-| `turn.run`, `turn.interrupt`, `session.close` | The last-`@` suffix of canonical `session_id`. |
+| Run start/read/wait/ack, `turn.interrupt`, `session.close` | The last-`@` suffix of canonical `session_id`. |
 | Explicit `message.send` | One request per remote input label; the destination resolves the label locally with carried groups and returns its ordinary delivery result. |
 | Group `message.send` | Capture `federation.hosts`; one host-specific group request per captured host plus the local leg; the origin merges receipts. |
 
@@ -1021,8 +1142,11 @@ One owner goroutine processes each link's received calls in frame order, so
 `turn.run`, `turn.interrupt`, and `session.close` cannot reorder during
 admission. Helpers only wait for already-admitted results. The origin captures
 the exact caller identity lifetime before starting its waiter. An origin loss
-ends that sink only; an admitted destination call continues until its result or
-destination-link loss, and a buffered orphan result may be discarded. A remote
+ends that reply sink. The independent authenticated owner-end/host-end control
+closes nonpersistent children; persistent children continue under their own
+auto-close policy. An admitted destination call settles through its worker or
+link closure, and a buffered orphan reply may be discarded without consuming
+the Worker cursor. A remote
 run's terminal response is processed before the corresponding remote close
 response is released, matching the local lifecycle.
 
@@ -1273,7 +1397,7 @@ product-side fate.
 | 444 | `9f366be:cmd/agent-sessions/federation_test.go` | Tests the deleted router. | Daemon federation proofs in Section 5. |
 | 1,628 | `9f366be:cmd/agent-sessions/lane.go` | Lane actor, parsers, lifecycle, and product dispatch die. | Daemon table/router plus caller-kit composition. |
 | 94 | `9f366be:cmd/agent-sessions/lane_names.go` | Actor-derived name authority dies. | Durable-table name index and runtime-map identity. |
-| 149 | `9f366be:cmd/agent-sessions/lane_notice.go` | Terminal notice and collection machinery die. | Direct `turn.run` reply plus filtered `session.list`. |
+| 149 | `9f366be:cmd/agent-sessions/lane_notice.go` | Product-specific notice machinery dies. | Worker cursor read/ack and ordinary lane-identity completion-pointer delivery. |
 | 1,245 | `9f366be:cmd/agent-sessions/lane_test.go` | Tests the deleted lane machinery. | Daemon transaction tests and shared kit fixtures. |
 | 746 | `9f366be:cmd/agent-sessions/messaging.go` | Product-aware peer/lane routing dies. | Generic daemon resolution and delivery. |
 | 662 | `9f366be:cmd/agent-sessions/messaging_test.go` | Tests the deleted messaging router. | Daemon delivery and federation proofs in Section 5. |
@@ -1335,9 +1459,9 @@ members. This is the complete product-facing contract:
 
 | Member | Product responsibility |
 | --- | --- |
-| `hello(cancel)` | Return fixed product, version, supported open fields, and ordered extra-argument declarations after app-ready. |
+| `hello(cancel)` | Return fixed product, version, supported open fields, ordered extra arguments and explicit `SupportsMessageRun` / `supports_message_run` capability after app-ready. |
 | `open(cancel, request)` | Create or resume from the typed request, apply its composed name as the product title where supported, and return the exact product session ID. |
-| `run(cancel, run, input)` | Start one native turn for the kit-owned `Run` token, observe it to a terminal result, and return that result. |
+| `run(cancel, run, input)` | Receive exactly one text or delivery seed, start one native turn for the kit-owned `Run`, report a seeded native receipt with `Run.ReportDelivery`, observe terminal, and return it. Go uses `RunInput{Text *string, Delivery *DeliveryRequest}`; JavaScript uses `{text}` or `{delivery}`. |
 | `interrupt(cancel, run)` | Ask the native turn identified by that same `Run` token to stop. |
 | `deliver(cancel, request)` | Receive the full closed `MessageDeliverRequest` `{message_id,from,body}` and return the truthful closed receipt at the demonstrated native boundary from Section 1 (`written`, `injected`, `queued_for_next_turn`, or `rejected`). |
 | `close(cancel)` | Stop accepting work, close native state, and release product resources. |
@@ -1376,7 +1500,7 @@ Callback failures map exactly once:
 | Callback | Wire result |
 | --- | --- |
 | `open` | `spawn_failed` with `stderr_tail:[message]`; the daemon passes it through unchanged. |
-| `run` | Terminal `{outcome:"failed",result:message}`; a run callback never returns an RPC error. |
+| `run` | Callback error or invalid/oversized output becomes retained `unavailable`. Only an observed native terminal supplies completed/failed/interrupted. |
 | `interrupt` | `{}`; the callback message is one quoted line on worker stderr, and the run terminal remains the stopping truth. |
 | `deliver` | An explicit `ProtocolError` with code `-32603` preserves an uncertain-submission RPC failure; the daemon maps it to `rejected/no_receipt`, which makes no non-consumption claim. Other callback errors become rejected receipts with the callback message as `reason` and must denote observed refusal or failure before submission. |
 | `close` | `{}` followed by ordinary kit exit; the callback message is one quoted line on worker stderr. |
@@ -1390,10 +1514,11 @@ branch of `session.hello` only after `hello()` succeeds. `session.open` is the
 only call that invokes `open()`. Until that result is written, the kit has no public
 session identity and the daemon rejects its worker-originated session methods.
 
-The kit has only two live facts: the connection is open or closed, and a run is
-present or absent. The product's opened session reference is data, not a
-lifecycle state. There is no generation, projection, collector, archive phase,
-deadline, or reconnect state machine.
+The kit owns the connection, one native Run slot, and the bounded ordered
+run cursor. Generation/contiguous sequence and consumed watermark bind ack
+without an unbounded consumed-ID map. The daemon alone owns lifetime policy
+and its one terminal deadline. Callers/adapters add no scheduler, result cache,
+archive timer or reconnect loop.
 
 The kit creates one `Run` token when it installs the run slot and passes that
 same object, with the same per-run cancellation context, to `run()` and
@@ -1405,9 +1530,13 @@ reads the slot under the same lock. Whichever side observes the other performs
 the one native interrupt. Once `run()` returns, the kit issues no new native
 interrupt, including while it writes the terminal result. A product or wrapper
 keeps no second starting, active, or interrupt-requested lifecycle bits.
-`Run.Done()` closes after the terminal response has been written and the run
-slot has been cleared, or after the connection has entered its single close
-path when no terminal can be written. It never closes before either boundary.
+`Run.Done()` closes after `turn.ready` acknowledgment publishes the terminal
+cursor and clears the native slot, or on connection retirement when no terminal
+can be published. Orderly close settles already-admitted cursor readers after
+Done and before product Close; new reads after closing are busy. EOF releases
+readers without inventing results. A blocking run awaiting execute acknowledgment
+installs its one wait before a deferred close write; the original 10-second close
+deadline continues throughout, including admission failure or connection loss.
 
 Before mutating an existing session, a native product must acquire exclusivity
 that excludes any competing process and hold it through native cleanup. A
@@ -1432,11 +1561,11 @@ request IDs correlate worker-originated session methods and inbound results, so
 The `Run` token is installed before `run()` starts. Immediately when `run()`
 returns, the kit cancels its per-run context under the slot mutex; from then on
 interrupt returns `not_running` without product code, including during result
-mapping, truncation, and the terminal write. Under that mutex, the run handler
-then validates the terminal result, writes its response, and clears the slot. A
-failed write closes the connection and leaves the slot occupied. A
-second run receives `busy` while native work remains; one arriving during the
-terminal write waits on the mutex and is admitted after the slot clears.
+mapping and the ready control call. The run handler validates the result
+and sends metadata without holding the slot mutex across RPC. Its observed
+ready acknowledgment publishes the cursor, clears the slot and closes Done
+before the reader dispatches the next frame. A failed control call closes the
+connection. A second run receives busy until the original slot clears.
 Interrupt marks the slot once and invokes `interrupt()` once; concurrent and
 later interrupt requests for the same run return `{}` without a second native
 call. After the terminal response and slot clear, interrupt returns
@@ -1446,7 +1575,8 @@ response.
 
 The worker handles one `session.close`: it first claims an empty run slot or
 joins the existing run, invokes the shared interrupt once without awaiting that
-callback, awaits the run result when present, cancels every callback context,
+callback, awaits Done and settles the already-admitted cursor readers, then
+cancels every callback context,
 calls `close()` once, writes one response, and closes the socket. A second close
 frame is the protocol violation defined in Section 2.4. One `sync.Once`
 arbitrates the product's `close()` call
@@ -1530,7 +1660,7 @@ conveniences over that no-hello client's call function; workers and peers are
 the other two uses of the same caller.
 The caller kit also owns the tool action vocabulary: exported `Actions` is
 `list`, `send`, `spawn`, `describe`, `run`, `start`, `wait`, `status`,
-`interrupt`, `close`, and `forget`, and `Caller.Action(ctx, action, args)`
+`interrupt`, `close`, `forget`, and `ack`, and `Caller.Action(ctx, action, args)`
 decodes the wrapper/MCP JSON argument shape and dispatches to the corresponding
 typed method or caller convenience. `forget` is `close` with `forget:true`.
 An unknown action returns an error for the MCP layer to report as Invalid
@@ -1541,21 +1671,21 @@ Go constructs one caller for each worker before `Serve` and binds it to the
 worker's current connection through `Worker.Call`; repeated `Worker.Caller()`
 calls return that same object, including when called before `Serve`.
 
-`start`, `status`, and `wait` are caller conveniences for resident callers such
-as plugins and the shared MCP server. They are not wire methods or
-`sessionbus-call` subcommands, and have one shared Go/JavaScript shape:
+`start`, `status`, `wait`, and `ack` are stateless methods over the shared wire.
+Go exposes `Start(ctx, TurnRunRequest) (RunRef,error)`,
+`Status(ctx, ReadRequest) (RunStatus,error)`,
+`WaitContext(ctx, WaitRequest) (RunStatus,error)`, a background `Wait(request)`
+convenience, and `Ack(ctx, RunRef) error`. JavaScript exposes the same lower-case
+methods as promises with an optional AbortSignal, including `wait(request,signal)`
+and `action("wait",request,signal)`. `run` returns RunStatus after a non-consuming
+wait. `ack` rejects pre-cancelled calls and settles after submission without
+using later caller cancellation. No Caller-local ID, result map, target map,
+timer, or reconnect loop implements these operations.
 
-| Call | Result and local rule |
-| --- | --- |
-| `start({session_id,input})` | Starts one wire `turn.run` and returns `{turn_id:"t-<n>"}`, counting from 1 per client. A map holds outstanding runs; different target sessions may run concurrently, but a second uncollected run for the same target is locally `busy`. |
-| `status({turn_id})` | Returns `{turn_id,session_id,state}` where state is `running`, `done`, or `unavailable`; `done` includes `result`. EOF uses reason `result unavailable, lane resumable`; another wire error uses `<code> <message>`. For an existing turn ID, status/wait return a state rather than an error. The first done/unavailable result collects the entry; a later lookup is `unknown_turn`. |
-| `wait({turn_id,timeout_ms?})` | Returns the same object on completion or connection loss. A timeout returns state `running` without cancelling the wire call; absent `timeout_ms` waits without a local limit. Completion or loss frees the target immediately, while collection follows the same first-result rule as `status`. |
-
-Go and JavaScript expose the
-same cancellation, concurrency, error, truncation, and EOF behavior through
-the shared fixtures; a later Python SDK is a translation of this surface, not a
-new contract. `peerReconnectInterval = 2s` is the caller kit's one clock;
-worker mode has none.
+Both languages share native-result validation, cancellation drain, ordered
+cursor, capacity, reader-close and EOF behavior. Peer attachment reconnect
+remains the existing 2-second transport rule; workers do not reconnect. Explicit
+user wait timeout is a read limit only; daemon policy owns auto-close.
 
 The Go host and JavaScript worker mode implement the preceding algorithm, not
 two interpretations of it. Each uses a small interpreter over the published
@@ -1571,7 +1701,7 @@ kits. The lifecycle cases are:
 2. describe hello followed by EOF before its acknowledgement, proving open and
    close are never called;
 3. completed, interrupted, and failed run results, including empty output and
-   character-bounded truncation with the exact `truncated` flag;
+   oversized-output unavailability and preserved product-reported truncation;
 4. a blocked run plus a second run rejected before product code;
 5. concurrent interrupt requests for one run, with the kit mark visible on the
    shared token, exactly one native interrupt callback, and no native turn
@@ -1757,7 +1887,7 @@ must remain net-negative after the kit is accounted separately.
 
 | Ledger item | Decision | Reason |
 | --- | --- | --- |
-| Process and connection | Lane mode starts one resident wrapper, which owns the product session, worker connection, one caller-kit instance, and one private Unix endpoint. In peer mode the resident owner is the process the product keeps for that session: a launcher-owned wrapper, a product-kept helper, or a product-daemon-spawned per-session helper, as named in the product ledger. | Caller `start`/`status`/`wait` state stays in that resident owner rather than in a process the product may kill after one call. A launcher-owned interactive child keeps its inherited terminal while the wrapper propagates signals and exit status. |
+| Process and connection | Lane mode starts one resident wrapper, which owns the product session, worker connection, one caller-kit instance, and one private Unix endpoint. In peer mode the resident owner is the process the product keeps for that session: a launcher-owned wrapper, a product-kept helper, or a product-daemon-spawned per-session helper, as named in the product ledger. | The shared Worker cursor retains output independently of the collector; adapters keep no caller result cache. A launcher-owned interactive child keeps its inherited terminal while the wrapper propagates signals and exit status. |
 | Installed entry forms | One installed integration image is named `<native>-peer`. With a launch token it holds the worker connection and owns a headless child. Without a token its product ledger identifies the resident peer owner; a short-lived `<native>-peer mcp` hops to that owner, while a product-kept helper may be the owner itself. | The environment is the mode discriminator for lane workers; peer ownership follows the product's observed process lifetime, and no product-specific worker flag enters the daemon. |
 | Peer identity and name | Identity is fixed before peer hello from the exact environment table below when present; otherwise Claude resolves its parent through `claude agents --json` (`9f366be:cmd/agent-sessions/connector.go:449-487`), while DSH/OpenCode/Kilo/Pi/OMP read their in-process session ID; Codex defers hello until the first tool call supplies `_meta.threadId` (`9f366be:cmd/agent-sessions/connector.go:247-251`). Fresh Grok and Qwen peer launchers mint one product-compatible UUID and pass it both through native `--session-id` and `SESSIONBUS_SESSION_ID`; a hand-started Grok or Qwen process without either source serves every Sessionbus tool with an error naming the required launcher and never sends hello. The product's current title is the hello name; a supported retitle sends a same-ID, same-groups re-hello. | Identity and title are launcher or product facts, never guessed process-global values. Re-hello mirrors one product name on the bus without adding an update method. |
 | Product boundary | The wrapper exposes the six Section 3 callbacks locally and contains every product import, argument translation, native protocol, and delivery compromise. | Deleting one wrapper when a vendor adopts the native kit must require no daemon, schema, or caller-kit change. |
@@ -1768,8 +1898,8 @@ must remain net-negative after the kit is accounted separately.
 | Shared MCP entry | `wrappers/mcp` is one stdio MCP server for the caller-kit tool surface. Its private backend carries one action request to a resident wrapper; its direct backend uses the caller owned by a product-kept helper. Each product adds only `<product>-peer mcp` dispatch and the backend selected by its observed lifetime. A raw framed method hop remains test-only. | One MCP implementation prevents every wrapper from rebuilding tool JSON, while the backend keeps `start`/`status`/`wait` in the actual resident process. Budget: **200 production / 200 test logical lines**. |
 | Local encryption handoff | **Reserved in 0.5.0, not implemented:** thin peer launchers and lane wrappers must not configure local TLS. Both kits consume and scrub `SESSIONBUS_LOCAL_KEY` and reject a nonempty value before opening the daemon connection; private MCP/plugin endpoints and native children never receive it. | The implemented local boundary is the owner-checked `0700` runtime directory and `0600` Unix socket. Host-to-hub TLS remains implemented and required; private wrapper hops are not daemon connections. |
 | Wrapper-only queue and run handoff | A wrapper that lacks native append/injection owns one in-memory FIFO capped at 64 deliveries and 1 MiB total after rendering and newline separators. The wrapper host's own renderer, fixed by a golden fixture, emits the `[sessionbus-metadata: ...]` carrier line, preserves arrival order, joins rendered entries with newlines, and prepends the result before caller input. FIFO extraction, native-turn creation, and interrupt are serialized under one boundary: interrupt before native creation aborts creation and returns terminal `interrupted` without a native call; after creation it calls native cancel. `injected` is returned only when the product callback confirms an actually active native turn; otherwise the message joins the next input. At run start the host atomically swaps the FIFO; overflow is rejected as `queue_full`. Shared fixtures cover interrupt at creation, delivery racing the first turn, and delivery racing terminal completion. | One renderer and one handoff boundary prevent wrappers from changing sender metadata, losing a boundary delivery, creating an unstoppable turn, or claiming injection into a turn that did not exist. `queued_for_next_turn` remains truthful; loss with wrapper exit is the accepted loss in Section 1.2. |
-| Interactive delivery | A peer integration may let an interactive product start a turn in response to delivery and report `injected`; the wrapper FIFO rule applies only to a lane, where delivery must not start an unrequested turn. | Peer interaction is already user-owned product work; lane control remains explicit through `turn.run`. |
-| Caller tool surface | Every product exposes the same caller-kit start/wait/status/interrupt/spawn/describe/close/list/send operations; product plugins do not invent wire methods. | Tool presentation is kit sugar over the eleven methods and is identical for native and wrapped products. |
+| Interactive delivery | A peer integration may let an interactive product start a turn in response to delivery and report `injected`; the wrapper FIFO rule applies only to a lane whose idle-message policy is stage. Explicit idle-message run policy permits one shared Worker seeded run. | Peer interaction is already user-owned product work; lane admission follows the independent shared policy. |
+| Caller tool surface | Every product exposes the same caller-kit start/wait/status/interrupt/spawn/describe/close/list/send operations; product plugins do not invent wire methods. | Tool presentation is kit sugar over the seventeen methods and is identical for native and wrapped products. |
 | Shared size cap | Wrapper host, private MCP/plugin endpoint, and bounded FIFO together: **400 production / 400 test logical lines**. | Product-independent scaffolding larger than the daemon router would be a second protocol implementation. |
 | Shared deletion | Delete the 16 shared files in `internal/launcher`, including `lane_grok_test.go` exactly once (2,199 lines), and `9f366be:cmd/agent-sessions/connector_refresh.go` plus its test (333 lines). Rewrite `connector.go`/test as the resident peer wrapper's connection, and rewrite `native_peer.go` as thin exec-time product configuration; the stdio entry is only the private action helper. | The old launcher package still dies: CLI parsing and thin peer plans move to `cmd`, product and connection ownership to wrappers, and lane recipes to wrappers. Connector self-exec/release refresh is unnecessary when the resident wrapper holds the connection. |
 
@@ -1950,11 +2080,11 @@ not a reason to move lines into a product integration.
 | --- | --- |
 | C1 | Two peer connections prove exact session identity, visibility-filtered list, and the full tool schema; the second visible peer can run, interrupt, and close the lane. |
 | C2 | Describe without open or residue; two-level spawn composes matching name/private-group paths, gives each lane only its parent and own private groups plus `extra_groups`, and proves explicit ancestor-group widening; all declared open fields and ordered arguments survive. Discovery advertises configured product names without gating an unlisted executable and a listed-but-missing name returns `unknown_product`; explicit `host` naming the other daemon in a two-daemon fixture describes and creates the row only there, while an unfederated host returns `unknown_host`. |
-| C3 | Local-kit start returns a local ID while one wire `turn.run` remains outstanding; status is running and bounded wait timeout does not cancel it. |
-| C4 | Wait returns the terminal, including exact result truncation metadata; abandoning the caller sink makes the kit report `result unavailable, lane resumable`, while the daemon drains and persists nothing. |
+| C3 | Wire start returns canonical RunRef; status and bounded wait are non-consuming reads of the resident Worker cursor. Replacement callers and cancellation retain output until ack or retirement. |
+| C4 | Wait returns validated native terminal or explicit unavailable. Oldest-first ack commits consumption; pre-cancelled ack writes nothing and submitted ack settles. Worker retirement invalidates the cursor; no daemon body store or restart recovery. |
 | C5 | Send resolves ID/name/group, deduplicates, and returns dispositions `written`, `injected`, `queued_for_next_turn`, or `rejected`, including exact rejected reasons `ambiguous` and `no_receipt`; an invisible peer receives `unknown_session`. |
 | C6 | Concurrent interrupts coalesce to one worker interrupt and idle interrupt maps `not_running`. |
-| C7 | Explicit close during a run orders a terminal observed within the bound before the close response; the one 10-second `closeBound` covers request through reap, and expiry KILL invents no terminal or second wait. The row remains resumable unless `forget:true`. |
+| C7 | Owner cleanup and terminal auto-close are independent and use ordinary Close. Open/staged delivery arm no deadline; admission cancels grace and proven refusal restores it. One 10-second close bound includes deferred execute acknowledgment, admitted-reader drain and reap; expiry invents no native terminal. Row remains resumable unless forget. |
 | C8 | Peer EOF reconnects; a new connection with the same canonical ID supersedes the displaced identity terminally. Same-ID re-hello refreshes name/info with fixed groups. Different-ID re-hello atomically detaches the old reply sinks, fails its pending deliveries once, removes its private group, and installs the new identity/group before acknowledgement; requests admitted before the switch retain the old source. |
 | C9 | The caller drives the remote row by canonical ID; offline resume replays the stored open value unchanged with argument order preserved; `name_taken`, `already_connected`, `not_connected`, forgotten-row `unknown_session`, disconnected-host `unknown_host`, and ambiguous one-hop loss `forward_lost` match Section 1.4; cleanup leaves no connection, process, token, or pending call. |
 
@@ -2034,7 +2164,7 @@ check.
 | Identity | Every local and remote summary emits the same canonical `id@host` and optional `name@host`; no separate host field or receiving-side relabeling exists. A standalone daemon uses `local`, and a federated daemon requires a configured non-`local` unique host name. |
 | Visibility | The destination daemon resolves and filters its own current directory with the carried admitted groups. The origin and hub keep no remote row. |
 | Messaging | One canonical remote message is forwarded once, produces one receipt, and is never retried or duplicated after federation reconnect. Bare input selects the caller's own host; qualified input is split only at the last `@`. |
-| Control and creation | Canonical remote resume/run/interrupt/close and explicit-host spawn/describe travel exactly one hop as `{from:{session_id:id@host,name:name@host,product,private_group,groups},request}`; the TLS connection identifies the origin and the JSON-RPC ID correlates it. The destination enters the same local request dispatcher with that captured identity, rejects a non-local target, and never forwards again. Caller loss removes only the reply sink; transport loss returns `forward_lost` without retry. |
+| Control and creation | Canonical remote resume/run/interrupt/close and explicit-host spawn/describe travel exactly one hop as `{from:{session_id:id@host,name:name@host,product,private_group,groups},request}`; the TLS connection identifies the origin and the JSON-RPC ID correlates it. The destination enters the same local request dispatcher with that captured identity, rejects a non-local target, and never forwards again. Collector loss removes its reply sink; authenticated lifetime loss separately closes nonpersistent children. Transport loss returns `forward_lost` without retry. |
 | Federation authentication | `sessionbus secret` produces 32 random bytes in base64; either side rejects a decoded secret shorter than 32 bytes. Wrong secret, unknown or reserved `local` name, or name/key mismatch fails TLS. The registry admits the first authenticated attachment and closes a later duplicate host, preserving the incumbent. Config is immutable while running; rotation restarts both endpoints and reconnects. No separate expiry/revocation exists, and secret-bearing config is mode 0600. |
 | Optional local encryption | **Not implemented in 0.5.0; reserved.** Both kits consume and scrub `SESSIONBUS_LOCAL_KEY` and reject a nonempty value. The passing 0.5.0 rows cover the owner-checked `0700` runtime directory, `0600` socket, and launch-token scrubbing—not a local-TLS handshake. Host-to-hub TLS remains implemented and required. |
 | Roster and aggregate list | `federation.hosts` returns one sorted snapshot of current authenticated host names. An aggregate list fans out from that capture and fails wholly with `forward_lost` if any captured leg is lost; there is no atomic cross-host list or partial result. |
@@ -2045,7 +2175,7 @@ check.
 
 | Deleted test family | Universal owner |
 | --- | --- |
-| Daemon lane actors, registries, projections, collectors, archives, timers, product dispatch, and argv reparse | Router/table tests drive the eleven methods over a real connection and assert only rows, current pointers, pending calls, and supervisor ownership. |
+| Daemon lane actors, registries, projections, collectors, archives, timers, product dispatch, and argv reparse | Router/table tests drive the seventeen methods over a real connection and assert rows, current admissions, pending calls, lifetime ownership, independent deadlines, and supervisor cleanup. |
 | Presence, messaging, federation, roster, names, and notices | Daemon visibility/resolution tests plus the federation gate; no test constructs a private actor or product driver. |
 | Product lane drivers and peer launchers | Each Section 4 wrapper test drives its six callbacks and exact native transcript; the shared wrapper-host unit suite proves the FIFO cap of 64 deliveries / 1 MiB rendered bytes, overflow `queue_full`, stale lock files do not block, a live inherited flock survives wrapper death until the child exits, interrupt at native-turn creation, first-turn/terminal delivery handoff races, and child death with a non-empty FIFO invents no receipt while leaving the row resumable; peer exec-plan tests stop at product config and never claim socket ownership. |
 | Go/JavaScript lifecycle duplication | The one 19-row fixture table runs unchanged through both native kits and the reference worker. |
