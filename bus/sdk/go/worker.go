@@ -68,6 +68,7 @@ func (r *Run) ReportDelivery(value DeliveryReceipt, failure error) error {
 }
 
 type Worker struct {
+	supportsWake bool
 	sessionID    string
 	records      []*workerRecord
 	changed      chan struct{}
@@ -112,6 +113,7 @@ func (w *Worker) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	w.supportsWake = hello.SupportsMessageRun
 	fd, err := w.dial(ctx, "unix", endpoint)
 	if err != nil {
 		return err
@@ -200,6 +202,10 @@ func (w *Worker) handle(ctx context.Context, request *rpc.Request) {
 }
 
 func (w *Worker) open(ctx context.Context, request *rpc.Request) {
+	if policy := request.Params.(*OpenRequest).Policy; policy != nil && policy.IdleMessage == "run" && !w.supportsWake {
+		w.reply(w.conn.Error(request, protocol.UnsupportedOpen, nil))
+		return
+	}
 	result, err := w.product.Open(ctx, *request.Params.(*OpenRequest))
 	if err != nil {
 		w.reply(w.conn.Error(request, protocol.SpawnFailed, map[string]any{"stderr_tail": []string{err.Error()}}))

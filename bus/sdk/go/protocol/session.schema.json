@@ -14,6 +14,7 @@
         "groups": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "info": {"type": "object", "additionalProperties": true},
         "launch_token": {"type": "string", "minLength": 1},
+        "supports_message_run": {"type":"boolean"},
         "supported_open_fields": {
           "type": "array",
           "uniqueItems": true,
@@ -38,6 +39,7 @@
             "allOf": [
               {"required": ["session_id", "groups", "info"]},
               {"not": {"required": ["supported_open_fields"]}},
+              {"not": {"required": ["supports_message_run"]}},
               {"not": {"required": ["extra_arguments"]}},
               {"not": {"required": ["version"]}}
             ]
@@ -308,6 +310,7 @@
       "required": ["product", "supported_open_fields", "extra_arguments"],
       "properties": {
         "product": {"type": "string", "minLength": 1},
+        "supports_message_run": {"type":"boolean"},
         "supported_open_fields": {
           "type": "array",
           "uniqueItems": true,

@@ -50,6 +50,7 @@ func (value *Integer) UnmarshalJSON(raw []byte) error {
 }
 
 type HelloDescription struct {
+	SupportsMessageRun  bool            `json:"supports_message_run,omitempty"`
 	Product             string          `json:"product"`
 	Version             string          `json:"version,omitempty"`
 	SupportedOpenFields []string        `json:"supported_open_fields"`
