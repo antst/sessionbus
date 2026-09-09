@@ -146,7 +146,9 @@ func TestPullRosterForwardAndCapturedCaller(t *testing.T) {
 func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 	_, address, secrets := testHub(t)
 	release := make(chan struct{})
+	admitted := make(chan struct{})
 	beta := connectTestDaemon(t, address, "beta", secrets["beta"], func(IncomingCall) (Wait, error) {
+		admitted <- struct{}{}
 		return func(done <-chan struct{}) (Reply, bool) {
 			select {
 			case <-release:
@@ -178,6 +180,15 @@ func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 	for index := range replies {
 		replies[index] = make(chan Reply, 1)
 		alpha.inbox <- OutgoingCall{Value: Forward{From: caller, Request: PublicRequest{Method: "turn.run", Params: params}}, Reply: replies[index]}
+		// Fill the destination pending table, not the independent bounded
+		// origin outbox. The last request must overflow before beta dispatch.
+		if index < 256 {
+			select {
+			case <-admitted:
+			case <-time.After(time.Second):
+				t.Fatal("destination did not admit held call")
+			}
+		}
 	}
 	for index, reply := range replies {
 		select {
