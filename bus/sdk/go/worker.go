@@ -211,11 +211,14 @@ func (w *Worker) open(ctx context.Context, request *rpc.Request) {
 		w.reply(w.conn.Error(request, protocol.SpawnFailed, map[string]any{"stderr_tail": []string{err.Error()}}))
 		return
 	}
+	w.mu.Lock()
 	w.sessionID = result.SessionID
-	if _, host, ok := strings.Cut(request.Params.(*OpenRequest).Name, "@"); ok {
-		w.sessionID += "@" + host
+	name := request.Params.(*OpenRequest).Name
+	if at := strings.LastIndexByte(name, '@'); at >= 0 {
+		w.sessionID += name[at:]
 	}
 	w.opened.Store(true)
+	w.mu.Unlock()
 	w.reply(w.conn.Result(request, result))
 }
 

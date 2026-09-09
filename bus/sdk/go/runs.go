@@ -24,6 +24,12 @@ func runSequence(id string) (string, uint64, bool) {
 }
 
 func (w *Worker) execute(request *rpc.Request, delivery *DeliveryRequest) {
+	w.mu.Lock()
+	if !w.opened.Load() {
+		w.mu.Unlock()
+		go w.answer(request, nil, protocol.Busy)
+		return
+	}
 	var ref RunRef
 	var seed RunInput
 	if delivery == nil {
@@ -37,12 +43,11 @@ func (w *Worker) execute(request *rpc.Request, delivery *DeliveryRequest) {
 		seed.Delivery = &copy
 	}
 	prefix, sequence, valid := runSequence(ref.RunID)
-	w.mu.Lock()
 	code := 0
 	switch {
 	case !w.opened.Load() || w.run != nil || len(w.records) >= protocol.MaxOperations:
 		code = protocol.Busy
-	case !valid || w.generation != "" && w.generation != prefix || sequence <= w.lastSequence:
+	case ref.SessionID != w.sessionID || !valid || w.generation != "" && w.generation != prefix || sequence != w.lastSequence+1:
 		code = protocol.InvalidFrame
 	}
 	if code != 0 {
@@ -55,7 +60,11 @@ func (w *Worker) execute(request *rpc.Request, delivery *DeliveryRequest) {
 	done, finish := context.WithCancel(context.Background())
 	slot := &Run{context: runCtx, cancel: cancel, done: done.Done(), finish: finish, admitted: make(chan struct{})}
 	if delivery != nil {
-		slot.receipt = func(value DeliveryReceipt, err error) error { return w.deliveryReply(request, value, err) }
+		slot.receipt = func(value DeliveryReceipt, err error) error {
+			err = w.deliveryReply(request, value, err)
+			w.reply(err)
+			return err
+		}
 	}
 	record := &workerRecord{status: RunStatus{SessionID: ref.SessionID, RunID: ref.RunID, State: "running"}, sequence: sequence}
 	w.records = append(w.records, record)
@@ -82,7 +91,7 @@ func (w *Worker) runTurn(slot *Run, record *workerRecord, seed RunInput) {
 	if err == nil {
 		err = protocol.ValidateTurnResult(result)
 	}
-	if _, validation := protocol.ResultBytes(1, "turn.status", status); validation != nil || err != nil && status.State == "done" {
+	if _, validation := protocol.ResultBytes(protocol.MaxRequestID, "turn.status", status); validation != nil || err != nil && status.State == "done" {
 		status.State, status.Result, status.Reason = "unavailable", nil, "native result failed validation"
 	}
 	if seed.Delivery != nil {
@@ -169,7 +178,11 @@ func (w *Worker) readRun(request *rpc.Request) {
 					status = current.status
 				}
 				w.mu.Unlock()
-				w.answer(request, status, 0)
+				if current == nil {
+					w.answer(request, nil, protocol.UnknownSession)
+				} else {
+					w.answer(request, status, 0)
+				}
 				return
 			case <-w.context.Done():
 				return
