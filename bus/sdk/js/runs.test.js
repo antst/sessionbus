@@ -2,6 +2,7 @@
 "use strict";
 const assert = require("node:assert/strict"), test = require("node:test");
 const { getEventListeners } = require("node:events");
+const { performance } = require("node:perf_hooks");
 const { Caller, Connection, ProtocolError, Worker } = require("./index.js");
 const { pair, deferred } = require("./test-support.js");
 const ref = { session_id: "native@local", run_id: "g/1" }, done = { outcome: "completed", result: "retained" };
@@ -113,17 +114,35 @@ test("orderly close drains admitted read before product Close", async (t) => {
   await assert.rejects(bus.call("turn.status", ref), code(-32003)); closeRelease.resolve(); await closing;
 });
 
-test("explicit wait beyond Node timer limit preserves requested deadline", async (t) => {
+for (const wallJump of [-10000000000, 10000000000]) test(`long explicit wait uses monotonic deadline across wall jump ${wallJump}`, { timeout: 2000 }, async (t) => {
   const release = deferred(), admitted = deferred();
   const { bus } = await cursor(t, { run: async () => { await release.promise; return done; }, observe: (r) => { if (r.method === "turn.wait") admitted.resolve(); } });
   await execute(bus);
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  let elapsed = 0, wall = 1000;
+  t.mock.method(performance, "now", () => elapsed); t.mock.method(Date, "now", () => wall);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   let returned = false;
   const reading = bus.call("turn.wait", { ...ref, timeout_ms: 2147483667 }).then((value) => { returned = true; return value; });
   await admitted.promise;
+  elapsed += 2147483647; wall += wallJump;
   t.mock.timers.tick(2147483647); await new Promise(setImmediate); assert.equal(returned, false);
-  t.mock.timers.tick(20); assert.equal((await reading).state, "running");
+  elapsed += 20; t.mock.timers.tick(20); assert.equal((await reading).state, "running");
   release.resolve(); assert.equal((await bus.call("turn.wait", ref)).state, "done");
+});
+
+test("cancelled long segmented wait drains at terminal without consuming", async (t) => {
+  const release = deferred(), admitted = deferred();
+  const { worker, bus } = await cursor(t, { run: async () => { await release.promise; return done; }, observe: (r) => { if (r.method === "turn.wait") admitted.resolve(); } });
+  await execute(bus);
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => elapsed); t.mock.timers.enable({ apis: ["setTimeout"] });
+  const cancel = new AbortController();
+  const rejected = assert.rejects(new Caller(bus).wait({ ...ref, timeout_ms: 2147483667 }, cancel.signal), /cancel segmented wait/);
+  await admitted.promise; elapsed += 2147483647; t.mock.timers.tick(2147483647);
+  cancel.abort(new Error("cancel segmented wait")); await rejected;
+  release.resolve(); assert.equal((await new Caller(bus).wait(ref)).state, "done");
+  assert.equal(bus.pending.size, 0); assert.equal(worker.waiters, 0);
+  assert.equal((await new Caller(bus).status(ref)).result.result, "retained");
 });
 
 for (const closing of [false, true]) test(`native terminal disables interrupt during held fallback receipt; close=${closing}`, { timeout: 2000 }, async (t) => {
