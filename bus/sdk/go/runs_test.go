@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/antst/sessionbus/bus/sdk/go/internal/rpc"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
@@ -259,5 +260,70 @@ func TestWorkerCursorCloseSettlesAdmittedReader(t *testing.T) {
 	close(closeRelease)
 	if err := <-closing; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkerCloseEOFSettlesCapturedRun(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(strconv.FormatBool(terminal), func(t *testing.T) {
+			captured := make(chan *Run, 1)
+			release, ready := make(chan struct{}), make(chan struct{})
+			p := &cursorProduct{run: func(_ context.Context, run *Run, _ RunInput) (TurnResult, error) {
+				captured <- run
+				<-release
+				return TurnResult{Outcome: "completed"}, nil
+			}}
+			left, right := net.Pipe()
+			w := NewWorker(p)
+			closing, returned := make(chan struct{}), make(chan struct{})
+			w.conn = rpc.New(left, true, func(ctx context.Context, request *rpc.Request) {
+				if request.Method != "session.close" {
+					w.handle(ctx, request)
+					return
+				}
+				// Preserve the production close admission's captured slot/sentinel,
+				// and observe the close routine itself returning after transport EOF.
+				w.mu.Lock()
+				slot := w.run
+				w.run = &Run{}
+				w.mu.Unlock()
+				go func() { close(closing); w.close(ctx, request, slot, false); close(returned) }()
+			})
+			w.context, w.cancel = context.WithCancel(w.conn.Context())
+			c := rpc.New(right, false, func(_ context.Context, request *rpc.Request) {
+				if request.Method == "turn.ready" {
+					close(ready) // Hold the real ready acknowledgement across EOF.
+				}
+			})
+			t.Cleanup(func() { w.cancel(); _ = w.conn.Close(); _ = c.Close() })
+			cursorOpen(t, c)
+			if err := cursorExecute(c, "native@local", "g/1"); err != nil {
+				t.Fatal(err)
+			}
+			run := <-captured
+			if terminal {
+				close(release)
+				<-ready
+			}
+			result := make(chan error, 1)
+			go func() {
+				result <- c.Call(context.Background(), "session.close", SessionCloseRequest{SessionID: "native@local"}, &struct{}{})
+			}()
+			<-closing
+			_ = c.Close()
+			for name, channel := range map[string]<-chan struct{}{"captured Run.Done": run.Done(), "close routine return": returned} {
+				select {
+				case <-channel:
+				case <-time.After(time.Second):
+					t.Errorf("%s remained blocked after EOF", name)
+				}
+			}
+			if !terminal {
+				close(release)
+			}
+			if err := <-result; err == nil {
+				t.Fatal("close crossing EOF succeeded")
+			}
+		})
 	}
 }

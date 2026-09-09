@@ -79,8 +79,8 @@ class Worker {
       if (run && !run.Done) return this.shutdown();
       this.closeRequest = request.params;
       this.run = {};
-      const call = run && !run.interrupted;
-      if (run) run.interrupted = true;
+      const call = run && !run.controller.signal.aborted && !run.interrupted;
+      if (call) run.interrupted = true;
       queueMicrotask(() => void this._close(request, run, call));
     }
   }
@@ -108,8 +108,11 @@ class Worker {
   }
   async _run(run, record, seed) {
     let status = { ...record.status, state: "done" };
-    try { status.result = structuredClone(await this.callbacks.run(run.controller.signal, run, seed)); }
-    catch (error) { status = { ...record.status, state: "unavailable", reason: clean(error) }; }
+    try {
+      let result;
+      try { result = await this.callbacks.run(run.controller.signal, run, seed); } finally { run.controller.abort(); }
+      status.result = structuredClone(result);
+    } catch (error) { status = { ...record.status, state: "unavailable", reason: clean(error) }; }
     try {
       if (status.state === "done") encode("TurnRunResult", status.result);
       encode("RunStatus", status);
@@ -117,7 +120,6 @@ class Worker {
     } catch { status = { ...record.status, state: "unavailable", reason: "native result failed validation" }; }
     if (seed.delivery) { try { await run.ReportDelivery(undefined, new ProtocolError({ code: -32603, message: "internal", data: "native delivery receipt unavailable" })); } catch {} }
     const ready = { session_id: status.session_id, run_id: status.run_id, state: status.state, ...(status.result ? { outcome: status.result.outcome } : { reason: status.reason }) };
-    run.controller.abort();
     await this.connection.call("turn.ready", ready, this.controller.signal, () => {
       record.status = status; if (this.run === run) this.run = null;
       this.changedResolve(); this.changed = new Promise((resolve) => { this.changedResolve = resolve; }); run.finish();
@@ -174,7 +176,13 @@ class Worker {
     } catch (error) { this.shutdown(); throw error; }
   }
   async _close(request, run, interrupt) {
-    if (interrupt) void Promise.resolve().then(() => this.callbacks.interrupt(run.controller.signal, run)).catch((error) => callbackError("interrupt", error)); if (run) await run.Done; while (this.waiters && !this.connection.signal.aborted) await this.changed; this.controller.abort();
+    if (interrupt) void Promise.resolve().then(() => { if (!run.controller.signal.aborted) return this.callbacks.interrupt(run.controller.signal, run); }).catch((error) => callbackError("interrupt", error));
+    if (run) {
+      await Promise.race([run.Done, this.connection.done]);
+      if (this.connection.signal.aborted) { run.finish(); return; }
+    }
+    while (this.waiters && !this.connection.signal.aborted) await this.changed;
+    this.controller.abort();
     await this._closeProduct(this.connection.signal);
     try { await this.connection.result(request, {}); } catch { this.shutdown(); } finally { this.shutdown(); }
   }

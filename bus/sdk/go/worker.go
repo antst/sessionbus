@@ -252,7 +252,12 @@ func (w *Worker) close(ctx context.Context, request *rpc.Request, slot *Run, int
 		}()
 	}
 	if slot != nil {
-		<-slot.done
+		select {
+		case <-slot.done:
+		case <-w.conn.Context().Done():
+			slot.finish()
+			return
+		}
 	}
 	for {
 		w.mu.Lock()

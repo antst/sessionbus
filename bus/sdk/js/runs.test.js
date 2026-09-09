@@ -13,18 +13,18 @@ async function cursor(t, options = {}) {
     hello: () => ({ product: "fixture", supported_open_fields: [], extra_arguments: [], supports_message_run: !!options.supportsWake }),
     open: async () => { opens++; await options.open?.(); return { session_id: "native" }; },
     run: async (...args) => { runs++; return options.run ? options.run(...args) : done; },
-    interrupt: async () => {}, deliver: async () => ({ disposition: "written" }), close: async () => { await options.close?.(); },
+    interrupt: async (...args) => { await options.interrupt?.(...args); }, deliver: async () => ({ disposition: "written" }), close: async () => { await options.close?.(); },
   };
   const worker = new Worker(callbacks, { SESSIONBUS_SOCKET: "/fixture", SESSIONBUS_LAUNCH_TOKEN: "token" }, { connect: () => client });
   const handle = worker._handle.bind(worker); worker._handle = (r) => { options.observe?.(r); handle(r); };
   const bus = new Connection(server, false, (r) => {
     if (r.method === "session.hello") { void bus.result(r, {}); hello.resolve(); }
-    if (r.method === "turn.ready") void bus.result(r, {});
+    if (r.method === "turn.ready") { if (options.ready) options.ready(r, bus); else void bus.result(r, {}); }
   });
   const serving = worker.serve().catch((error) => error);
   t.after(async () => { worker.shutdown(); bus.close(); await serving; });
   await hello.promise; if (!options.pendingOpen) await bus.call("session.open", open);
-  return { worker, bus, runs: () => runs, opens: () => opens };
+  return { worker, bus, client, runs: () => runs, opens: () => opens };
 }
 const execute = (bus, overrides = {}) => bus.call("turn.execute", { ...ref, input: "work", ...overrides });
 const code = (value) => (error) => error instanceof ProtocolError && error.code === value;
@@ -124,4 +124,64 @@ test("explicit wait beyond Node timer limit preserves requested deadline", async
   t.mock.timers.tick(2147483647); await new Promise(setImmediate); assert.equal(returned, false);
   t.mock.timers.tick(20); assert.equal((await reading).state, "running");
   release.resolve(); assert.equal((await bus.call("turn.wait", ref)).state, "done");
+});
+
+for (const closing of [false, true]) test(`native terminal disables interrupt during held fallback receipt; close=${closing}`, { timeout: 2000 }, async (t) => {
+  const held = deferred(), release = deferred(), closeEntered = deferred(), interruptEntered = deferred(); let captured, interrupts = 0;
+  const { worker, bus, client } = await cursor(t, {
+    run: async (_signal, run) => { captured = run; return done; },
+    interrupt: () => { interrupts++; },
+    observe: (r) => { if (r.method === "session.close") closeEntered.resolve(); if (r.method === "turn.interrupt") interruptEntered.resolve(); },
+  });
+  const write = client._write.bind(client);
+  client._write = (chunk, encoding, callback) => {
+    if (JSON.parse(chunk).error?.code === -32603) {
+      write(chunk, encoding, (error) => { held.resolve(); void release.promise.then(() => callback(error)); });
+    } else write(chunk, encoding, callback);
+  };
+  const receipt = assert.rejects(bus.call("message.deliver", delivery), code(-32603));
+  await held.promise;
+  assert.equal(captured.controller.signal.aborted, true);
+  let closed, interrupted;
+  if (closing) {
+    closed = bus.call("session.close", { session_id: ref.session_id });
+    await closeEntered.promise;
+    await new Promise(setImmediate);
+  } else {
+    interrupted = assert.rejects(bus.call("turn.interrupt", { session_id: ref.session_id }), code(-32004));
+    await interruptEntered.promise; await new Promise(setImmediate);
+  }
+  assert.equal(interrupts, 0); assert.equal(captured.Interrupted(), false);
+  release.resolve(); await receipt; await interrupted;
+  if (closing) { await closed; await worker.closed; }
+  else assert.equal((await bus.call("turn.wait", ref)).state, "done");
+});
+
+test("close during held ready does not interrupt an already terminal run", { timeout: 2000 }, async (t) => {
+  const ready = deferred(), closing = deferred(); let captured, interrupts = 0;
+  const { bus } = await cursor(t, {
+    run: async (_signal, run) => { captured = run; return done; }, interrupt: () => { interrupts++; },
+    ready: (request) => ready.resolve(request), observe: (r) => { if (r.method === "session.close") closing.resolve(); },
+  });
+  await execute(bus); const request = await ready.promise;
+  const closed = bus.call("session.close", { session_id: ref.session_id });
+  await closing.promise; await new Promise(setImmediate);
+  assert.equal(captured.controller.signal.aborted, true); assert.equal(captured.Interrupted(), false); assert.equal(interrupts, 0);
+  await bus.result(request, {}); await closed; await captured.Done;
+});
+
+for (const terminal of [false, true]) test(`close EOF settles captured Run and close routine; terminal=${terminal}`, { timeout: 2000 }, async (t) => {
+  const entered = deferred(), release = deferred(), ready = deferred(), closing = deferred(), returned = deferred();
+  const { worker, bus } = await cursor(t, {
+    run: async (_signal, run) => { entered.resolve(run); await release.promise; return done; },
+    ready: (request) => ready.resolve(request),
+  });
+  const close = worker._close.bind(worker);
+  worker._close = async (...args) => { closing.resolve(); try { await close(...args); } finally { returned.resolve(); } };
+  await execute(bus); const run = await entered.promise;
+  if (terminal) { release.resolve(); await ready.promise; }
+  const rejected = assert.rejects(bus.call("session.close", { session_id: ref.session_id }));
+  await closing.promise; bus.close();
+  await Promise.all([run.Done, returned.promise, worker.closed, rejected]);
+  release.resolve();
 });
