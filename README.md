@@ -28,7 +28,7 @@ configuration, keys, state and the other role are preserved. An earlier real
 to the release symlink. Product peers
 install separately from [sessionbus-peers](https://github.com/antst/sessionbus-peers).
 
-The default is the **development prerelease**, updated after green develop CI.
+The default is the **development prerelease**, updated by tested builds of merged `develop` pushes.
 To pin a published version, set the variable on **sh**, not curl:
 
 ```sh
@@ -79,7 +79,7 @@ to confirm its listener. Preserved `hub.env` can override its default port and h
 
 `deploy/package-release OUTPUT_DIRECTORY` builds separate host/hub archives;
 set `GOOS`/`GOARCH` to cross-compile. The `Binary releases` workflow publishes
-development artifacts after successful develop CI. Maintainers can dispatch it
+development artifacts from `develop` pushes after its tests and builds pass. Maintainers can dispatch it
 with a new `vX.Y.Z` tag for an immutable stable release. `SOURCE.txt` records the
 commit; archives contain the revision and license. Stable tags are never
 overwritten. Manual release builds also run the repository tests.
