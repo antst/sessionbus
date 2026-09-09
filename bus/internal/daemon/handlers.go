@@ -28,6 +28,10 @@ func (s *session) handleRequest(frame protocol.Frame, params any) {
 }
 
 func (s *session) dispatchRequest(frame protocol.Frame, params any) {
+	if len(s.requests) >= protocol.MaxOperations && frame.Method != "turn.ready" {
+		s.error(frame, protocol.Busy, nil)
+		return
+	}
 	switch frame.Method {
 	case "session.list":
 		s.list(frame, params.(*protocol.SessionListRequest))
@@ -37,8 +41,16 @@ func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 		s.describe(frame, params.(*protocol.LaneDescribeRequest))
 	case "lane.spawn":
 		s.spawn(frame, params.(*protocol.LaneSpawnRequest))
-	case "turn.run":
+	case "turn.run", "turn.start":
 		s.route(frame, params.(*protocol.TurnRunRequest).SessionID, params)
+	case "turn.status":
+		s.route(frame, params.(*protocol.ReadRequest).SessionID, params)
+	case "turn.wait":
+		s.route(frame, params.(*protocol.WaitRequest).SessionID, params)
+	case "turn.ack":
+		s.route(frame, params.(*protocol.RunRef).SessionID, params)
+	case "turn.ready":
+		s.turnReady(frame, params.(*protocol.TurnReady))
 	case "turn.interrupt":
 		s.route(frame, params.(*protocol.SessionTarget).SessionID, params)
 	case "session.close":
@@ -179,6 +191,11 @@ func (s *session) describe(frame protocol.Frame, input *protocol.LaneDescribeReq
 }
 
 func (s *session) spawn(frame protocol.Frame, input *protocol.LaneSpawnRequest) {
+	parent := s.daemon.directory.callerOwner(s)
+	if parent == nil {
+		s.error(frame, protocol.NotConnected, nil)
+		return
+	}
 	caller := s.federationCaller()
 	resumeID := ""
 	if input.Host != "" && input.Host != s.daemon.host {
@@ -203,6 +220,7 @@ func (s *session) spawn(frame protocol.Frame, input *protocol.LaneSpawnRequest) 
 	}
 	if resumeID != "" {
 		start := newLaunch("", false, false)
+		start.parent, start.input = parent, input
 		_, code := s.daemon.directory.reserveResume(resumeID, caller.Groups, start)
 		if code != 0 {
 			start.timer.Stop()
@@ -225,8 +243,14 @@ func (s *session) spawn(frame protocol.Frame, input *protocol.LaneSpawnRequest) 
 	parentGroup := caller.PrivateGroup
 	private := parentGroup + "/" + input.Name
 	groups := unique(append([]string{parentGroup, private}, input.ExtraGroups...))
-	value := row{Product: input.Product, Name: qualify(composedName, s.daemon.host), Groups: groups, Open: *input.Open}
+	policy, err := normalizePolicy(input, nil, caller.SessionID)
+	if err != nil {
+		s.error(frame, protocol.UnsupportedOpen, nil)
+		return
+	}
+	value := row{Policy: policy, Product: input.Product, Name: qualify(composedName, s.daemon.host), Groups: groups, Open: *input.Open}
 	start := newLaunch(input.Product, false, true)
+	start.parent, start.input = parent, input
 	_, code := s.daemon.directory.reserveFresh(value, start)
 	if code != 0 {
 		start.timer.Stop()

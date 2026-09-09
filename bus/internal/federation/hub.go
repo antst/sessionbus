@@ -4,7 +4,9 @@ package federation
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,29 +43,32 @@ const (
 	registryHosts
 	registryForward
 	registryReply
+	registryOwnerEnd
 )
 
 type registryEvent struct {
-	kind    registryEventKind
-	link    *hostLink
-	fd      net.Conn
-	tls     *tls.Config
-	forward *incomingForward
-	reply   *originReply
-	id      int64
-	ack     chan bool
+	ownerEnd *incomingOwnerEnd
+	kind     registryEventKind
+	link     *hostLink
+	fd       net.Conn
+	tls      *tls.Config
+	forward  *incomingForward
+	reply    *originReply
+	id       int64
+	ack      chan bool
 }
 
 type hostLink struct {
-	ctx      context.Context
-	host     string
-	fd, raw  net.Conn
-	wire     *conn.Conn
-	inbox    chan any
-	registry chan<- registryEvent
-	done     chan struct{}
-	group    sync.WaitGroup
-	log      io.Writer
+	attachment string
+	ctx        context.Context
+	host       string
+	fd, raw    net.Conn
+	wire       *conn.Conn
+	inbox      chan any
+	registry   chan<- registryEvent
+	done       chan struct{}
+	group      sync.WaitGroup
+	log        io.Writer
 }
 
 type hubState struct {
@@ -180,7 +185,7 @@ func (s *hubState) handle(ctx context.Context, inbox chan<- registryEvent, event
 		event.ack <- accepted
 	case registryClosed:
 		if s.links[event.link.host] == event.link {
-			delete(s.links, event.link.host)
+			s.remove(event.link)
 		}
 		event.ack <- true
 	case registryHosts:
@@ -197,6 +202,8 @@ func (s *hubState) handle(ctx context.Context, inbox chan<- registryEvent, event
 		}
 	case registryForward:
 		s.forward(ctx, inbox, event.link, *event.forward)
+	case registryOwnerEnd:
+		s.ownerEnd(ctx, inbox, event.link, *event.ownerEnd)
 	case registryReply:
 		s.reply(*event.reply)
 	}
@@ -226,7 +233,11 @@ func authenticate(ctx context.Context, raw net.Conn, configuration *tls.Config, 
 }
 
 func newHostLink(ctx context.Context, host string, fd, raw net.Conn, registry chan<- registryEvent, log io.Writer) *hostLink {
-	link := &hostLink{ctx: ctx, host: host, fd: fd, raw: raw, inbox: make(chan any, conn.OutboxSize), registry: registry, done: make(chan struct{}), log: log}
+	identity := make([]byte, 16)
+	if _, err := rand.Read(identity); err != nil {
+		panic(err)
+	}
+	link := &hostLink{attachment: hex.EncodeToString(identity), ctx: ctx, host: host, fd: fd, raw: raw, inbox: make(chan any, conn.OutboxSize), registry: registry, done: make(chan struct{}), log: log}
 	link.wire = conn.Start(fd, link.inbox, &link.group)
 	return link
 }
@@ -256,6 +267,22 @@ func (l *hostLink) run(accepted bool) {
 			failed, stopping = true, nil
 		case raw := <-l.inbox:
 			switch event := raw.(type) {
+			case lifetimeCall:
+				if failed || len(pending) >= maxPendingForwardedPerHost {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					l.wire.Close()
+					failed = true
+					continue
+				}
+				nextID++
+				body, err := requestBytes(nextID, event.Method, event.Value)
+				if err != nil || !l.wire.Send(body) {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					l.wire.Close()
+					failed = true
+					continue
+				}
+				pending[nextID] = pendingCall{event.Method, event.Reply}
 			case outgoingForward:
 				if failed || len(pending) >= maxPendingForwardedPerHost {
 					event.reply <- errorReply(protocol.ForwardLost, nil)
@@ -311,8 +338,11 @@ func (l *hostLink) settleQueued() {
 	for {
 		select {
 		case value := <-l.inbox:
-			if call, ok := value.(outgoingForward); ok {
+			switch call := value.(type) {
+			case outgoingForward:
 				call.reply <- errorReply(protocol.ForwardLost, nil)
+			case lifetimeCall:
+				call.Reply <- errorReply(protocol.ForwardLost, nil)
 			}
 		default:
 			return
@@ -346,10 +376,21 @@ func (l *hostLink) frame(event conn.Frame, pending map[int64]pendingCall, lastIn
 		postRegistry(l.ctx, l.registry, registryEvent{kind: registryHosts, link: l, id: frame.ID})
 		return nil
 	}
+	if frame.Method == ownerEndMethod {
+		var value OwnerEnd
+		if protocol.DecodeJSON(frame.Params, &value) != nil || !validHost(value.Host) || !ownedPart(value.SessionID, l.host, false) || value.Lifetime == "" || value.Source != "" || value.Attachment != "" {
+			return errFrame
+		}
+		postRegistry(l.ctx, l.registry, registryEvent{kind: registryOwnerEnd, link: l, ownerEnd: &incomingOwnerEnd{frame.ID, value}})
+		return nil
+	}
 	if frame.Method != forwardMethod {
 		return errFrame
 	}
 	value, host, err := decodeForward(frame.Params, l.host)
+	if err == nil && value.From.SourceAttachment != "" {
+		return errFrame
+	}
 	if err == nil {
 		postRegistry(l.ctx, l.registry, registryEvent{kind: registryForward, link: l, forward: &incomingForward{id: frame.ID, value: value, host: host}})
 	}
@@ -366,6 +407,9 @@ func settlePending(pending map[int64]pendingCall) {
 func validReply(method string, frame protocol.Frame) bool {
 	if frame.Error != nil {
 		return true
+	}
+	if method == ownerEndMethod || method == hostEndMethod {
+		return validControlReply(frame)
 	}
 	if method == hostsMethod {
 		_, err := DecodeHosts(Reply{Result: frame.Result})
@@ -384,6 +428,7 @@ func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, orig
 		s.reply(originReply{origin, call.id, errorReply(protocol.UnknownHost, nil)})
 		return
 	}
+	call.value.From.SourceAttachment = origin.attachment
 	reply := make(chan Reply, 1)
 	if !destination.wire.Post(outgoingForward{call.value, reply}) {
 		reply <- errorReply(protocol.ForwardLost, nil)
@@ -411,5 +456,38 @@ func (s *hubState) remove(link *hostLink) {
 	if link != nil && s.links[link.host] == link {
 		delete(s.links, link.host)
 		link.wire.Close()
+		for _, other := range s.links {
+			if !other.wire.Post(lifetimeCall{Method: hostEndMethod, Value: HostEnd{Host: link.host, Attachment: link.attachment}, Reply: make(chan Reply, 1)}) {
+				other.wire.Close()
+			}
+		}
 	}
+}
+
+func (s *hubState) ownerEnd(ctx context.Context, inbox chan<- registryEvent, origin *hostLink, call incomingOwnerEnd) {
+	if s.links[origin.host] != origin {
+		return
+	}
+	destination := s.links[call.Value.Host]
+	if destination == nil {
+		s.reply(originReply{origin, call.ID, errorReply(protocol.UnknownHost, nil)})
+		return
+	}
+	call.Value.Source, call.Value.Attachment = origin.host, origin.attachment
+	reply := make(chan Reply, 1)
+	if !destination.wire.Post(lifetimeCall{ownerEndMethod, call.Value, reply}) {
+		s.remove(destination)
+		s.reply(originReply{origin, call.ID, errorReply(protocol.ForwardLost, nil)})
+		return
+	}
+	s.group.Add(1)
+	go func() {
+		defer s.group.Done()
+		select {
+		case value := <-reply:
+			postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin, call.ID, value}})
+		case <-origin.done:
+		case <-ctx.Done():
+		}
+	}()
 }

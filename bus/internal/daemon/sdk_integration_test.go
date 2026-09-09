@@ -32,25 +32,23 @@ func TestSDKCallerReportsRealDaemonEOF(t *testing.T) {
 		<-ctx.Done()
 		return sessionkit.DeliveryReceipt{Disposition: "rejected", Reason: "closing"}, nil
 	})
-	runs := sessionkit.NewCaller(func(ctx context.Context, _ string, _ any) (json.RawMessage, error) {
-		return caller.Call(ctx, "message.send", sessionkit.MessageSendRequest{Target: "lane@local", Message: "hold"})
-	})
-	started, err := runs.Start(sessionkit.TurnRunRequest{SessionID: "lane@local", Input: "hold"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	calling := make(chan error, 1)
+	go func() {
+		_, callErr := caller.Caller.Send(context.Background(), sessionkit.MessageSendRequest{Target: "lane@local", Message: "hold"})
+		calling <- callErr
+	}()
 	select {
 	case <-received:
 	case <-time.After(time.Second):
-		t.Fatal("run did not reach target")
+		t.Fatal("send did not reach target")
 	}
 	if err = service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	status, err := runs.Wait(sessionkit.WaitRequest{TurnID: started.TurnID})
-	if err != nil || status.State != "unavailable" || status.Reason != "result unavailable, lane resumable" {
-		t.Fatalf("daemon EOF status = %#v, %v", status, err)
+	if err = <-calling; err == nil {
+		t.Fatal("daemon EOF fabricated a result")
 	}
+
 }
 
 func TestSDKPeerDaemonRehelloRules(t *testing.T) {

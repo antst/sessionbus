@@ -14,6 +14,9 @@ import (
 const spawnTransactionTimeout = 60 * time.Second
 
 type launch struct {
+	parent   *ownership
+	input    *protocol.LaneSpawnRequest
+	previous *entry
 	token    string
 	product  string
 	entry    *entry

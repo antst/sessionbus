@@ -14,6 +14,9 @@ const closeBound = 10 * time.Second
 func (s *session) startLane(start *launch, helloFrame protocol.Frame, hello protocol.HelloDescription) {
 	s.launch, s.identity, s.owned = start, start.entry, 1
 	unsupportedField := unsupported(start.entry.row.Open, hello.SupportedOpenFields)
+	if !start.describe && start.entry.row.Policy.IdleMessage == "run" && !hello.SupportsMessageRun {
+		unsupportedField = "idle_message"
+	}
 	if start.describe || unsupportedField != "" {
 		body, _ := protocol.ResultBytes(helloFrame.ID, helloFrame.Method, struct{}{})
 		s.wire.Finish(body, supersedeWriteBound)
@@ -37,7 +40,7 @@ func (s *session) beginOpen() {
 	}
 	request := protocol.OpenRequest{
 		Name: value.Name, Groups: append([]string(nil), value.Groups...),
-		ResumeSessionID: resume, Open: value.Open,
+		ResumeSessionID: resume, Open: value.Open, Policy: value.Policy,
 	}
 	body, err := protocol.RequestBytes(s.nextOut, "session.open", request)
 	if err != nil || !s.wire.Send(body) {
@@ -88,29 +91,52 @@ func (s *session) finishOpen(frame protocol.Frame) {
 			s.orderlyStop()
 			return
 		}
+	} else if err := s.daemon.table.write(item.row); err != nil {
+		s.abortLaunch(answer{code: protocol.Internal, data: err.Error()})
+		s.orderlyStop()
+		return
 	} else if !s.daemon.directory.publish(s.launch, s, time.Time{}) {
-		s.abortLaunch(answer{code: protocol.AlreadyConnected})
+		if restoreErr := s.daemon.table.write(s.launch.previous.row); restoreErr != nil {
+			s.abortLaunch(answer{code: protocol.Internal, data: restoreErr.Error()})
+		} else {
+			s.abortLaunch(answer{code: protocol.AlreadyConnected})
+		}
 		s.orderlyStop()
 		return
 	}
 	s.identity, s.committed = item, true
 	s.launch.timer.Stop()
-	s.launch.reply <- answer{value: &protocol.LaneSpawnResult{SessionID: item.row.SessionID}}
+	s.launch.reply <- answer{value: &protocol.LaneSpawnResult{SessionID: item.row.SessionID, Policy: cloneRow(item.row).Policy}}
 }
 
 func (s *session) beginClose(request routedRequest) {
+	s.stopAutoClose()
 	s.closeCall = &request
-	input := request.params.(*protocol.SessionCloseRequest)
-	s.forget = input.Forget
+	s.closeTimer = time.NewTimer(closeBound)
+	s.forget = request.params.(*protocol.SessionCloseRequest).Forget
+	s.writeDeferredClose()
+}
+
+// A blocking run already owns a read. Install it after execute admission and
+// before writing close, while the original close deadline keeps running.
+func (s *session) writeDeferredClose() {
+	if s.closeCall == nil || s.closed || s.stopping {
+		return
+	}
+	for _, pending := range s.pending {
+		if pending.method == "session.close" || pending.method == "turn.execute" && pending.collect {
+			return
+		}
+	}
+	request := *s.closeCall
 	s.nextOut++
-	body, err := protocol.RequestBytes(s.nextOut, "session.close", input)
+	body, err := protocol.RequestBytes(s.nextOut, "session.close", request.params)
 	if err != nil || !s.wire.Send(body) {
 		s.hardStop()
 		return
 	}
 	s.daemon.directory.admitted(s.identity, request.method)
 	s.pending[s.nextOut] = request
-	s.closeTimer = time.NewTimer(closeBound)
 }
 
 func (s *session) finishCloseResponse(frame protocol.Frame) {
@@ -181,6 +207,7 @@ func (s *session) recordStop(signal syscall.Signal) {
 }
 
 func (s *session) finishLane() {
+	s.stopAutoClose()
 	s.launch.timer.Stop()
 	if s.closeTimer != nil {
 		s.closeTimer.Stop()

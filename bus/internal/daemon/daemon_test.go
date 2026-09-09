@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(os.Getenv("STDERR_PARENT_READY"), []byte("ready"), 0o600)
 		os.Exit(7)
 	}
-	if strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
+	if strings.HasPrefix(name, "wake-worker") || strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
 		worker := sessionkit.NewWorker(&fixtureProduct{product: name})
 		_ = worker.Serve(context.Background())
 		os.Exit(0)
@@ -181,7 +181,7 @@ type fixtureProduct struct {
 }
 
 func (p *fixtureProduct) Hello(context.Context) (sessionkit.HelloDescription, error) {
-	return sessionkit.HelloDescription{Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
+	return sessionkit.HelloDescription{SupportsMessageRun: strings.HasPrefix(p.product, "wake-worker"), Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
 }
 func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest) (sessionkit.OpenResult, error) {
 	if strings.HasPrefix(p.product, "open-exit-worker") {
@@ -229,7 +229,21 @@ func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest)
 	return sessionkit.OpenResult{SessionID: fmt.Sprintf("native-%d", os.Getpid())}, nil
 }
 
-func (p *fixtureProduct) Run(_ context.Context, run *sessionkit.Run, input string) (sessionkit.TurnResult, error) {
+func (p *fixtureProduct) Run(_ context.Context, run *sessionkit.Run, seed sessionkit.RunInput) (sessionkit.TurnResult, error) {
+	var input string
+	if seed.Text != nil {
+		input = *seed.Text
+	} else {
+		input = seed.Delivery.Body
+		if seed.Delivery.MessageID == "" || seed.Delivery.From.SessionID == "" {
+			return sessionkit.TurnResult{}, errors.New("missing delivery identity")
+		}
+		if input == "uncertain" {
+			_ = run.ReportDelivery(sessionkit.DeliveryReceipt{}, &sessionkit.ProtocolError{Code: protocol.Internal, Message: "internal"})
+		} else {
+			_ = run.ReportDelivery(sessionkit.DeliveryReceipt{Disposition: "written"}, nil)
+		}
+	}
 	if input == "fail" {
 		return sessionkit.TurnResult{}, errors.New("stream malformed")
 	}
@@ -281,9 +295,9 @@ func TestCloseErrorAfterFailedRunStillCloses(t *testing.T) {
 	parent := connectPeer(t, socket, "parent", "parent", "shared")
 	var spawned protocol.LaneSpawnResult
 	must(t, parent.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "close-error-worker", Open: &protocol.OpenOptions{}}, &spawned))
-	var turn protocol.TurnResult
+	var turn protocol.RunStatus
 	must(t, parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "fail"}, &turn))
-	if turn.Outcome != "failed" || turn.Result != "stream malformed" {
+	if turn.State != "unavailable" || turn.Reason != "stream malformed" {
 		t.Fatalf("failed run = %#v", turn)
 	}
 	must(t, parent.call("session.close", protocol.SessionCloseRequest{SessionID: spawned.SessionID}, &struct{}{}))
@@ -645,9 +659,9 @@ func TestSpawnRunCloseResumeForgetAndRestart(t *testing.T) {
 		t.Fatalf("groups = %#v, want %#v", listed.Sessions[0].Groups, wantGroups)
 	}
 
-	var turn protocol.TurnResult
+	var turn protocol.RunStatus
 	must(t, parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "echo"}, &turn))
-	if turn.Outcome != "completed" || turn.Result != "echo" {
+	if turn.Result == nil || turn.Result.Outcome != "completed" || turn.Result.Result != "echo" {
 		t.Fatalf("turn = %#v", turn)
 	}
 	if code := rpcCode(parent.call("turn.interrupt", protocol.SessionTarget{SessionID: spawned.SessionID}, &struct{}{})); code != protocol.NotRunning {
@@ -812,6 +826,7 @@ func TestSpawnDecisionAndExitDuringOpen(t *testing.T) {
 	d := &Daemon{host: "local", table: &table{path: filepath.Join(directory, "sessions")}, shutdown: make(chan struct{})}
 	d.directory = newDirectory(d, nil)
 	start := newLaunch("worker", false, true)
+	start.parent = &ownership{id: "parent@local", token: "fixture"}
 	item, code := d.directory.reserveFresh(row{Product: "worker", Name: "parent/child@local", Groups: []string{"parent", "child"}}, start)
 	if code != 0 {
 		t.Fatal(code)
@@ -896,9 +911,10 @@ func TestCallerEOFKeepsRunUntilWorkerTerminalOrClose(t *testing.T) {
 	_, socket := startDaemon(t)
 	owner := connectPeer(t, socket, "owner", "owner", "shared")
 	other := connectPeer(t, socket, "other", "other", "shared")
+	persistent := true
 	var spawned protocol.LaneSpawnResult
-	must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "fixture-worker", ExtraGroups: []string{"shared"}, Open: &protocol.OpenOptions{}}, &spawned))
-	result := protocol.TurnResult{}
+	must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Persistent: &persistent, Name: "child", Product: "fixture-worker", ExtraGroups: []string{"shared"}, Open: &protocol.OpenOptions{}}, &spawned))
+	result := protocol.RunStatus{}
 	run := make(chan error, 1)
 	go func() {
 		run <- owner.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "block"}, &result)
@@ -973,7 +989,7 @@ func TestWorkerCallsLeaveInAdmissionOrder(t *testing.T) {
 	parent := connectPeer(t, socket, "parent", "parent", "shared")
 	var spawned protocol.LaneSpawnResult
 	must(t, parent.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "sequence-worker", Open: &protocol.OpenOptions{}}, &spawned))
-	var result protocol.TurnResult
+	var result protocol.RunStatus
 	run := make(chan error, 1)
 	go func() {
 		run <- parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "block"}, &result)

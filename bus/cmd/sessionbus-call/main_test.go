@@ -132,11 +132,11 @@ func TestTurnRunWaitsForTerminal(t *testing.T) {
 		t.Fatalf("returned before terminal with exit %d", code)
 	default:
 	}
-	terminal := protocol.TurnResult{Outcome: "completed", Result: "terminal"}
+	terminal := protocol.RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "terminal"}}
 	if err = writeResult(server, runRequest, terminal); err != nil {
 		t.Fatal(err)
 	}
-	if code := <-finished; code != 0 || stdout.String() != `{"outcome":"completed","result":"terminal"}`+"\n" {
+	if code := <-finished; code != 0 || stdout.String() != `{"session_id":"lane@local","run_id":"g/1","state":"done","result":{"outcome":"completed","result":"terminal"}}`+"\n" {
 		t.Fatalf("terminal exit %d: %s / %s", code, stdout.String(), stderr.String())
 	}
 }

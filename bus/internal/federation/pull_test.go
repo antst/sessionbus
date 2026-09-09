@@ -41,7 +41,7 @@ func testHub(t *testing.T) (*Hub, string, map[string]string) {
 	return hub, listener.Addr().String(), secrets
 }
 
-func connectTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error)) *testDaemon {
+func connectTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error), lifetime ...func(LifetimeEvent)) *testDaemon {
 	t.Helper()
 	raw, err := net.Dial("tcp", address)
 	if err != nil {
@@ -59,7 +59,7 @@ func connectTestDaemon(t *testing.T, address, host, secret string, admit func(In
 	value := &testDaemon{inbox: make(chan any, 256), cancel: cancel, done: make(chan error, 1), closed: make(chan struct{})}
 	go func() {
 		defer close(value.closed)
-		value.done <- ServeDaemon(ctx, host, fd, value.inbox, admit, io.Discard)
+		value.done <- ServeDaemon(ctx, host, fd, value.inbox, admit, io.Discard, lifetime...)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -230,7 +230,7 @@ func TestOriginLossDoesNotRetargetReplyAfterReconnect(t *testing.T) {
 			return func(done <-chan struct{}) (Reply, bool) {
 				select {
 				case <-release:
-					raw, _ := protocol.EncodeResult("turn.run", protocol.TurnResult{Outcome: "completed", Result: "done"})
+					raw, _ := protocol.EncodeResult("turn.run", protocol.RunStatus{SessionID: "lane@beta", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}})
 					return Reply{Result: raw}, true
 				case <-done:
 					return Reply{}, false
