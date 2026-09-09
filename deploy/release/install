@@ -1,0 +1,173 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+set -eu
+umask 077
+src=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+role=$(cat "$src/ROLE")
+revision=$(cat "$src/REVISION")
+case "$role" in host|hub) ;; *) echo 'Invalid package role' >&2; exit 1;; esac
+case "$revision" in ''|*[!0-9a-f]*) echo 'Invalid package revision' >&2; exit 1;; esac
+prefix="$HOME/.local"
+config="${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus"
+root="$prefix/libexec/sessionbus/$role"
+case "$HOME$config" in *'%'*|*'"'*|*'\'*|*'&'*|*'<'*|*'>'*|*'|'*|*'$'*|*'`'*|*'
+'*) echo 'Unsupported character in installation path' >&2; exit 1;; esac
+case "$(uname -s)" in
+ Linux) systemctl --user show-environment >/dev/null; service="sessionbus"; [ "$role" != hub ] || service=sessionbus-hub;;
+ Darwin) service=net.antst.sessionbus; [ "$role" != hub ] || service=net.antst.sessionbus-hub; launchctl print "gui/$(id -u)" >/dev/null;;
+ *) echo 'Unsupported OS' >&2; exit 1;;
+esac
+[ ! -L "$root" ] || { echo "Refusing indirect install root: $root" >&2; exit 1; }
+[ ! -e "$root/current" ] || [ -L "$root/current" ] || { echo 'Current release must be a symlink' >&2; exit 1; }
+mkdir -p "$root/releases" "$prefix/bin" "$config"
+stage=$(mktemp -d "$root/releases/.stage.XXXXXX")
+trap 'rm -rf "$stage"' 0
+trap 'exit 1' HUP INT TERM
+cp -R "$src/bin" "$src/LICENSE" "$src/THIRD-PARTY-NOTICES.txt" "$src/ROLE" "$src/REVISION" "$stage/"
+release="$root/releases/$revision"
+if [ -d "$release" ]; then
+ diff -qr "$stage" "$release" >/dev/null || { echo 'Existing revision has different bytes; refusing ambiguous reinstall' >&2; exit 1; }
+else
+ mv "$stage" "$release"
+fi
+# Stop the old daemon before changing its current link. Never unlink its socket.
+if [ "$(uname -s)" = Linux ]; then
+ if systemctl --user cat "$service.service" >/dev/null 2>&1; then systemctl --user stop "$service.service"; fi
+else
+ if launchctl print "gui/$(id -u)/$service" >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$service"; fi
+fi
+rm -f "$root/current.new"
+ln -s "$release" "$root/current.new"
+# Portable mv follows a destination symlink to a directory, so remove only the
+# validated old link first, while its service is stopped.
+rm -f "$root/current"
+mv "$root/current.new" "$root/current"
+for binary in "$release"/bin/*; do
+ name=${binary##*/}
+ [ ! -d "$prefix/bin/$name" ] || { echo "Cannot replace directory $prefix/bin/$name" >&2; exit 1; }
+ ln -sfn "$root/current/bin/$name" "$prefix/bin/$name"
+done
+if [ "$role" = host ]; then
+ # noclobber avoids rotating a key on reinstall or concurrent first installs.
+ if [ ! -e "$config/host.key" ]; then
+  keytmp=$(mktemp "$config/.host-key.XXXXXX")
+  "$release/bin/sessionbus" secret > "$keytmp"
+  ln "$keytmp" "$config/host.key" || { rm -f "$keytmp"; exit 1; }
+  rm "$keytmp"
+ fi
+ [ -f "$config/host.key" ] && [ ! -L "$config/host.key" ] || { echo 'Host key is not a regular owned file' >&2; exit 1; }
+ chmod 600 "$config/host.key"
+ if [ ! -e "$config/service.env" ]; then
+  printf '# Set SESSIONBUS_HOST and SESSIONBUS_HUB to join a hub.\nSESSIONBUS_HUB_SECRET_FILE="%s/host.key"\n' "$config" > "$config/service.env"
+ fi
+else
+ if [ ! -e "$config/hub.json" ]; then (set -C; printf '{}\n' > "$config/hub.json"); fi
+ chmod 600 "$config/hub.json"
+fi
+if [ "$(uname -s)" = Linux ]; then
+ units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+ mkdir -p "$units"
+ if [ "$role" = host ]; then
+  cat > "$units/$service.service" <<EOF
+[Unit]
+Description=Sessionbus host daemon
+After=network-online.target
+[Service]
+Type=simple
+Environment="PATH=$prefix/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-"$config/service.env"
+RuntimeDirectory=sessionbus
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart="$root/current/bin/sessionbus"
+Restart=on-failure
+RestartSec=2
+[Install]
+WantedBy=default.target
+EOF
+ else
+  cat > "$units/$service.service" <<EOF
+[Unit]
+Description=Sessionbus central hub
+After=network-online.target
+[Service]
+Type=simple
+Environment=SESSIONBUS_HUB_LISTEN=:7419
+Environment="SESSIONBUS_HUB_CONFIG=$config/hub.json"
+EnvironmentFile=-"$config/hub.env"
+ExecStart="$root/current/bin/sessionbus-hub"
+Restart=on-failure
+RestartSec=2
+[Install]
+WantedBy=default.target
+EOF
+ fi
+ systemctl --user daemon-reload
+ systemctl --user enable "$service.service"
+ systemctl --user start "$service.service"
+ systemctl --user is-active --quiet "$service.service"
+else
+ # launchd does not read EnvironmentFile; its launch script uses the same
+ # administrator-owned environment file as the Linux installation.
+ launch="$root/run"
+ executable=sessionbus; envfile=service.env
+ [ "$role" != hub ] || { executable=sessionbus-hub; envfile=hub.env; }
+ cat > "$launch" <<EOF
+#!/bin/sh
+set -eu
+export PATH="$prefix/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export SESSIONBUS_HUB_CONFIG="$config/hub.json"
+export SESSIONBUS_HUB_LISTEN=:7419
+set -a
+[ ! -f "$config/$envfile" ] || . "$config/$envfile"
+set +a
+exec "$root/current/bin/$executable"
+EOF
+ chmod 700 "$launch"
+ mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.local/state/sessionbus/logs"
+ plist="$HOME/Library/LaunchAgents/$service.plist"
+ cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$service</string>
+<key>ProgramArguments</key><array><string>$launch</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>$HOME</string></dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>StandardErrorPath</key><string>$HOME/.local/state/sessionbus/logs/$service.log</string>
+</dict></plist>
+EOF
+ plutil -lint "$plist" >/dev/null
+ launchctl bootstrap "gui/$(id -u)" "$plist"
+ launchctl enable "gui/$(id -u)/$service"
+ launchctl kickstart "gui/$(id -u)/$service"
+fi
+if [ "$role" = host ]; then
+ "$prefix/bin/sessionbus-call" -name installer-check session.list '{}' >/dev/null
+fi
+printf 'Installed Sessionbus %s (%s) in %s\n' "$role" "$revision" "$prefix"
+case ":$PATH:" in *":$prefix/bin:"*) ;; *) printf 'Add this to your login shell profile: export PATH="$HOME/.local/bin:$PATH"\n';; esac
+if [ "$role" = host ]; then
+ cat <<EOF
+The local host is ready. Product peers install separately from sessionbus-peers.
+Your persistent join secret is $config/host.key (not printed here).
+To join a hub:
+  1. Securely copy host.key to the hub administrator (mode 0600).
+  2. On the hub: sessionbus-hub add-host -secret-file /path/to/host.key HOSTNAME
+     Then restart sessionbus-hub.
+  3. Set these in $config/service.env (preserve existing settings):
+       SESSIONBUS_HOST=HOSTNAME
+       SESSIONBUS_HUB=hub.example:7419
+       SESSIONBUS_HUB_SECRET_FILE="$config/host.key"
+     Restart sessionbus. HOSTNAME must match the hub registration.
+EOF
+else
+ cat <<EOF
+The hub is listening on TCP 7419 with host map $config/hub.json.
+Allow that TCP port through your firewall when remote hosts should connect.
+To add a host, obtain its generated host.key through a secure channel, then:
+  sessionbus-hub add-host -config "$config/hub.json" -secret-file /path/to/host.key HOSTNAME
+Restart sessionbus-hub after changing the map. Existing host secrets are preserved.
+EOF
+fi
+printf 'Linux restart: systemctl --user restart %s\nmacOS restart: launchctl kickstart -k gui/$(id -u)/%s\n' "$( [ "$role" = host ] && echo sessionbus || echo sessionbus-hub )" "$( [ "$role" = host ] && echo net.antst.sessionbus || echo net.antst.sessionbus-hub )"
