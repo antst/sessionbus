@@ -172,6 +172,17 @@ func TestPolicySeedUncertaintyDoesNotUndoAdmission(t *testing.T) {
 	}
 }
 func TestPolicyResumeDefaultsAndNotification(t *testing.T) {
+	for _, target := range []string{"first@local", "different@local"} {
+		selected, err := normalizePolicy(&protocol.LaneSpawnRequest{NotifyTarget: target}, nil, "first@local")
+		if target == "first@local" {
+			must(t, err)
+			if !selected.Notify || selected.NotifyTarget != "" || selected.OwnerSessionID != target {
+				t.Fatalf("explicit owner %#v", selected)
+			}
+		} else if err == nil {
+			t.Fatal("different parent-owned notify target accepted")
+		}
+	}
 	yes, no, zero := true, false, int64(0)
 	initial, err := normalizePolicy(&protocol.LaneSpawnRequest{AutoCloseMS: &zero, IdleMessage: "run"}, nil, "first@local")
 	must(t, err)

@@ -62,7 +62,7 @@ func normalizePolicy(input *protocol.LaneSpawnRequest, previous *protocol.LanePo
 			return nil, errors.New("persistent notification requires a target")
 		}
 	} else {
-		if input.NotifyTarget != "" {
+		if input.NotifyTarget != "" && input.NotifyTarget != ownerID {
 			return nil, errors.New("parent-owned lane notifies its owner")
 		}
 		value.Notify, value.NotifyTarget = true, ""
