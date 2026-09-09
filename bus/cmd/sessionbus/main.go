@@ -65,15 +65,31 @@ func parse(arguments []string) (daemon.Config, error) {
 	products := ""
 	set.StringVar(&configuration.SocketPath, "socket", socket, "unix socket path")
 	set.StringVar(&configuration.TablePath, "table", filepath.Join(root, "sessions.json"), "durable session table")
-	set.StringVar(&configuration.Host, "host", "", "local host name")
+	set.StringVar(&configuration.Host, "host", os.Getenv("SESSIONBUS_HOST"), "local host name")
 	set.StringVar(&products, "products", "", "comma-separated advertised products")
-	set.StringVar(&configuration.HubAddress, "hub", "", "federation hub address")
+	set.StringVar(&configuration.HubAddress, "hub", os.Getenv("SESSIONBUS_HUB"), "federation hub address")
 	set.StringVar(&configuration.HubSecret, "hub-secret", "", "federation host secret")
+	var secretFile string
+	set.StringVar(&secretFile, "hub-secret-file", os.Getenv("SESSIONBUS_HUB_SECRET_FILE"), "mode-0600 federation secret file (used when connecting to a hub)")
 	if err := set.Parse(arguments); err != nil {
 		return daemon.Config{}, err
 	}
 	if set.NArg() != 0 {
 		return daemon.Config{}, fmt.Errorf("unexpected argument %q", set.Arg(0))
+	}
+	if secretFile != "" && configuration.HubAddress != "" {
+		if configuration.HubSecret != "" {
+			return daemon.Config{}, fmt.Errorf("use only one of -hub-secret and -hub-secret-file")
+		}
+		info, err := os.Stat(secretFile)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			return daemon.Config{}, fmt.Errorf("hub secret file must be a mode-0600 regular file")
+		}
+		b, err := os.ReadFile(secretFile)
+		if err != nil {
+			return daemon.Config{}, err
+		}
+		configuration.HubSecret = strings.TrimSpace(string(b))
 	}
 	if products != "" {
 		configuration.Products = strings.Split(products, ",")

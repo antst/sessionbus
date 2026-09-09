@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,4 +159,66 @@ func writeResult(fd net.Conn, request protocol.Frame, result any) error {
 		_, err = fd.Write(body)
 	}
 	return err
+}
+
+func TestTimeoutIncludesMissingDaemon(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	socket := filepath.Join(testsocket.Directory(t), "absent.sock")
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-socket", socket, "-timeout", "5ms", "session.list"}, &stdout, &stderr) }()
+	select {
+	case code := <-done:
+		if code != 1 || !bytes.Contains(stdout.Bytes(), []byte("context deadline exceeded")) {
+			t.Fatalf("%d %s %s", code, stdout.String(), stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection deadline did not stop CLI")
+	}
+}
+
+func TestTimeoutClosesBlockedWrite(t *testing.T) {
+	socket := filepath.Join(testsocket.Directory(t), "blocked.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	var stdout, stderr bytes.Buffer
+	finished := make(chan int, 1)
+	go func() {
+		params, _ := json.Marshal(map[string]string{"target": "someone", "message": strings.Repeat("😀", 200000)})
+		finished <- run([]string{"-socket", socket, "-timeout", "1s", "message.send", string(params)}, &stdout, &stderr)
+	}()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := server.(*net.UnixConn).SetReadBuffer(1024); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(server)
+	body, err := reader.ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello, err := protocol.DecodeFrame(body[:len(body)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeResult(server, hello, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	// Observe the next write starting, then stop draining its large body.
+	if _, err := reader.ReadByte(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-finished:
+		if code != 1 {
+			t.Fatalf("unexpected exit %d: %s", code, stdout.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadline failed to unblock transport write")
+	}
 }

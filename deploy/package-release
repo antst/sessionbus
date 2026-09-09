@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+set -eu
+out=${1:?usage: deploy/package-release OUTPUT_DIRECTORY}
+mkdir -p "$out"
+out=$(CDPATH='' cd "$out" && pwd -P)
+repo=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
+cd "$repo"
+platform=${GOOS:-$(go env GOOS)}
+arch=${GOARCH:-$(go env GOARCH)}
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' 0
+trap 'exit 1' HUP INT TERM
+revision=$(git rev-parse HEAD)
+for role in host hub; do
+ mkdir -p "$stage/$role/bin"
+ commands=sessionbus-hub
+ [ "$role" != host ] || commands='sessionbus sessionbus-call example-peer'
+ for command in $commands; do
+  CGO_ENABLED=0 GOOS="$platform" GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/$role/bin/$command" "./bus/cmd/$command"
+ done
+ cp LICENSE deploy/release/install deploy/release/THIRD-PARTY-NOTICES.txt "$stage/$role/"
+ printf '%s\n' "$role" > "$stage/$role/ROLE"
+ printf '%s\n' "$revision" > "$stage/$role/REVISION"
+ tar -czf "$out/sessionbus-$role-$platform-$arch.tar.gz" -C "$stage/$role" bin LICENSE THIRD-PARTY-NOTICES.txt ROLE REVISION install
+done
