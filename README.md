@@ -23,7 +23,9 @@ no sudo, Go, npm, or checkout is required. The scripts verify release SHA256
 checksums and install under `~/.local`, using systemd user services on Linux or
 launchd on macOS. Linux needs a working user service manager. Only the selected
 role is restarted. Add `~/.local/bin` to your login PATH if prompted. Existing
-configuration, keys, state and the other role are preserved. Product peers
+configuration, keys, state and the other role are preserved. An earlier real
+`current` directory is retained under `releases/prior.*/current` when migrating
+to the release symlink. Product peers
 install separately from [sessionbus-peers](https://github.com/antst/sessionbus-peers).
 
 The default is the **development prerelease**, updated after green develop CI.

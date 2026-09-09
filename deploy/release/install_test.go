@@ -58,7 +58,18 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 					t.Fatalf("install: %v\n%s", err, out)
 				}
 			}
+			// Earlier manual installers used a real current directory.
+			old := filepath.Join(home, ".local/libexec/sessionbus", role, "current", "keep-prior")
+			write(t, old, "prior-payload")
 			command()
+			preserved, err := filepath.Glob(filepath.Join(home, ".local/libexec/sessionbus", role, "releases/prior.*/current/keep-prior"))
+			if err != nil || len(preserved) != 1 {
+				t.Fatalf("prior directory lost: %v %v", preserved, err)
+			}
+			b, err := os.ReadFile(preserved[0])
+			if err != nil || string(b) != "prior-payload" {
+				t.Fatal("prior payload changed", err)
+			}
 			key := filepath.Join(home, ".config/sessionbus/host.key")
 			if role == "hub" {
 				key = filepath.Join(home, ".config/sessionbus/hub.json")
@@ -67,7 +78,7 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			command()
-			b, err := os.ReadFile(key)
+			b, err = os.ReadFile(key)
 			if err != nil || string(b) != "preserve-existing" {
 				t.Fatal("secret overwritten", err)
 			}

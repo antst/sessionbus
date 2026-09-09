@@ -18,7 +18,7 @@ case "$(uname -s)" in
  *) echo 'Unsupported OS' >&2; exit 1;;
 esac
 [ ! -L "$root" ] || { echo "Refusing indirect install root: $root" >&2; exit 1; }
-[ ! -e "$root/current" ] || [ -L "$root/current" ] || { echo 'Current release must be a symlink' >&2; exit 1; }
+[ ! -e "$root/current" ] || [ -L "$root/current" ] || [ -d "$root/current" ] || { echo 'Current release must be a directory or symlink' >&2; exit 1; }
 mkdir -p "$root/releases" "$prefix/bin" "$config"
 stage=$(mktemp -d "$root/releases/.stage.XXXXXX")
 trap 'rm -rf "$stage"' 0
@@ -40,7 +40,13 @@ rm -f "$root/current.new"
 ln -s "$release" "$root/current.new"
 # Portable mv follows a destination symlink to a directory, so remove only the
 # validated old link first, while its service is stopped.
-rm -f "$root/current"
+if [ -d "$root/current" ] && [ ! -L "$root/current" ]; then
+ prior=$(mktemp -d "$root/releases/prior.XXXXXX")
+ mv "$root/current" "$prior/current"
+ printf 'Preserved previous directory installation in %s/current\n' "$prior"
+else
+ rm -f "$root/current"
+fi
 mv "$root/current.new" "$root/current"
 for binary in "$release"/bin/*; do
  name=${binary##*/}
