@@ -11,6 +11,7 @@ const (
 	MaxFrameBytes = 1 << 20
 	MaxTextRunes  = 262144
 	MaxRequestID  = 1<<53 - 1
+	MaxOperations = 256
 
 	InvalidFrame     = -32600
 	InvalidHello     = -32602
