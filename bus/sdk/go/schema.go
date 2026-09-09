@@ -7,6 +7,11 @@ import (
 )
 
 type (
+	LanePolicy  = protocol.LanePolicy
+	RunRef      = protocol.RunRef
+	ReadRequest = protocol.ReadRequest
+	RunStatus   = protocol.RunStatus
+
 	ExtraArgument       = protocol.ExtraArgument
 	HelloDescription    = protocol.HelloDescription
 	OpenOptions         = protocol.OpenOptions

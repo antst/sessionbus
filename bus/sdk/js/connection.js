@@ -8,7 +8,10 @@ const METHODS = Object.freeze({
   "session.list": ["SessionListRequest", "SessionListResult", "client"], "message.send": ["MessageSendRequest", "MessageSendResult", "client"],
   "message.deliver": ["MessageDeliverRequest", "MessageDeliverResult", "daemon"], "lane.describe": ["LaneDescribeRequest", "LaneDescribeResult", "client"],
   "lane.spawn": ["LaneSpawnRequest", "LaneSpawnResult", "client"], "session.open": ["SessionOpenRequest", "SessionOpenResult", "daemon"],
-  "turn.run": ["TurnRunRequest", "TurnRunResult", "both"], "turn.interrupt": ["TurnInterruptRequest", "TurnInterruptResult", "both"], "session.close": ["SessionCloseRequest", "SessionCloseResult", "both"],
+  "turn.run": ["TurnRunRequest", "RunStatus", "client"],
+  "turn.start": ["TurnRunRequest", "RunRef", "client"], "turn.execute": ["ExecuteRequest", "RunRef", "daemon"],
+  "turn.status": ["ReadRequest", "RunStatus", "both"], "turn.wait": ["WaitRequest", "RunStatus", "both"],
+  "turn.ack": ["RunRef", "SessionCloseResult", "both"], "turn.ready": ["TurnReady", "SessionCloseResult", "client"], "turn.interrupt": ["TurnInterruptRequest", "TurnInterruptResult", "both"], "session.close": ["SessionCloseRequest", "SessionCloseResult", "both"],
 });
 const MESSAGES = Object.freeze({
   "-32600": "invalid_frame", "-32602": "invalid_hello", "-32603": "internal", "-32001": "unknown_session", "-32002": "not_connected", "-32003": "busy", "-32004": "not_running", "-32005": "already_connected", "-32007": "unknown_product", "-32008": "unsupported_open_field", "-32009": "spawn_failed", "-32010": "timeout", "-32011": "not_committed", "-32012": "superseded", "-32013": "name_taken", "-32014": "unknown_host", "-32015": "forward_lost",

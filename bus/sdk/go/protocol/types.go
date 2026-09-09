@@ -80,7 +80,50 @@ type OpenOptions struct {
 	Arguments       []string `json:"arguments,omitempty"`
 }
 
+type LanePolicy struct {
+	Persistent     bool   `json:"persistent"`
+	AutoCloseMS    int64  `json:"auto_close_ms"`
+	IdleMessage    string `json:"idle_message"`
+	Notify         bool   `json:"notify"`
+	NotifyTarget   string `json:"notify_target,omitempty"`
+	OwnerSessionID string `json:"owner_session_id,omitempty"`
+}
+
+type RunRef struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+}
+type ReadRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
+}
+type WaitRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
+	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
+}
+type RunStatus struct {
+	SessionID string      `json:"session_id"`
+	RunID     string      `json:"run_id"`
+	State     string      `json:"state"`
+	Result    *TurnResult `json:"result,omitempty"`
+	Reason    string      `json:"reason,omitempty"`
+}
+type ExecuteRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+	Input     string `json:"input"`
+}
+type TurnReady struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+	State     string `json:"state"`
+	Outcome   string `json:"outcome,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 type OpenRequest struct {
+	Policy          *LanePolicy `json:"policy,omitempty"`
 	Name            string      `json:"name"`
 	Groups          []string    `json:"groups"`
 	ResumeSessionID string      `json:"resume_session_id,omitempty"`
@@ -111,6 +154,7 @@ type DeliverySource struct {
 }
 
 type DeliveryRequest struct {
+	RunID     string         `json:"run_id,omitempty"`
 	MessageID string         `json:"message_id"`
 	From      DeliverySource `json:"from"`
 	Body      string         `json:"body"`
@@ -127,6 +171,7 @@ type HostProducts struct {
 }
 
 type SessionSummary struct {
+	Policy    *LanePolicy    `json:"policy,omitempty"`
 	SessionID string         `json:"session_id"`
 	Kind      string         `json:"kind"`
 	Product   string         `json:"product"`
@@ -175,6 +220,11 @@ type LaneDescribeRequest struct {
 type LaneDescribeResult = HelloDescription
 
 type LaneSpawnRequest struct {
+	Persistent      *bool        `json:"persistent,omitempty"`
+	AutoCloseMS     *int64       `json:"auto_close_ms,omitempty"`
+	IdleMessage     string       `json:"idle_message,omitempty"`
+	Notify          *bool        `json:"notify,omitempty"`
+	NotifyTarget    string       `json:"notify_target,omitempty"`
 	Name            string       `json:"name,omitempty"`
 	Product         string       `json:"product,omitempty"`
 	Host            string       `json:"host,omitempty"`
@@ -184,7 +234,8 @@ type LaneSpawnRequest struct {
 }
 
 type LaneSpawnResult struct {
-	SessionID string `json:"session_id"`
+	Policy    *LanePolicy `json:"policy,omitempty"`
+	SessionID string      `json:"session_id"`
 }
 type SessionTarget struct {
 	SessionID string `json:"session_id"`
