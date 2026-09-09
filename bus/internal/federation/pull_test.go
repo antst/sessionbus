@@ -156,7 +156,13 @@ func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 			}
 		}, nil
 	})
+	// Client TLS completion does not imply hub registration. Complete an
+	// authenticated request on each incumbent before racing a duplicate.
+	_ = callHosts(t, beta)
 	alpha := connectTestDaemon(t, address, "alpha", secrets["alpha"], func(IncomingCall) (Wait, error) { return immediate(Reply{}), nil })
+	if hosts := callHosts(t, alpha); len(hosts) != 1 || hosts[0] != "beta" {
+		t.Fatalf("registered destination roster = %#v", hosts)
+	}
 	duplicate := connectTestDaemon(t, address, "alpha", secrets["alpha"], func(IncomingCall) (Wait, error) { return immediate(Reply{}), nil })
 	select {
 	case <-duplicate.closed:
