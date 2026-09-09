@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -273,5 +274,75 @@ func runInvalidLocal(c *Caller, operation string, raw json.RawMessage) error {
 		_ = json.Unmarshal(raw, &request)
 		_, err := c.Wait(request)
 		return err
+	}
+}
+
+func TestCallerCancelledWaitRetainsResult(t *testing.T) {
+	for _, action := range []bool{false, true} {
+		for _, bounded := range []bool{false, true} {
+			for _, collect := range []string{"status", "wait"} {
+				t.Run(fmt.Sprintf("action=%t/bounded=%t/collect=%s", action, bounded, collect), func(t *testing.T) {
+					client, server := net.Pipe()
+					requests := make(chan *rpc.Request, 1)
+					daemon := rpc.New(server, false, func(_ context.Context, request *rpc.Request) { requests <- request })
+					wire := rpc.New(client, true, func(context.Context, *rpc.Request) {})
+					t.Cleanup(func() { _ = wire.Close(); _ = daemon.Close() })
+					caller := NewCaller(func(ctx context.Context, method string, params any) (raw json.RawMessage, err error) {
+						err = wire.Call(ctx, method, params, &raw)
+						return
+					})
+					started, err := caller.Start(TurnRunRequest{SessionID: "lane@local", Input: "work"})
+					mustRPC(t, err)
+					native := <-requests
+					request := WaitRequest{TurnID: started.TurnID}
+					if bounded {
+						timeout := int64(60000)
+						request.TimeoutMS = &timeout
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					wait := func() error {
+						if action {
+							raw, marshalErr := json.Marshal(request)
+							mustRPC(t, marshalErr)
+							_, callErr := caller.Action(ctx, "wait", raw)
+							return callErr
+						}
+						_, callErr := caller.WaitContext(ctx, request)
+						return callErr
+					}
+					waiting := make(chan error, 1)
+					go func() { waiting <- wait() }()
+					cancel()
+					if err = <-waiting; !errors.Is(err, context.Canceled) {
+						t.Fatalf("cancelled wait = %v", err)
+					}
+					status, err := caller.Status(StatusRequest{TurnID: started.TurnID})
+					if err != nil || status.State != "running" {
+						t.Fatalf("run after cancel: %#v %v", status, err)
+					}
+					caller.mu.Lock()
+					done := caller.runs[started.TurnID].done
+					caller.mu.Unlock()
+					terminal := TurnResult{Outcome: "completed", Result: "retained"}
+					mustRPC(t, daemon.Result(native, terminal))
+					<-done
+					if err = wait(); !errors.Is(err, context.Canceled) {
+						t.Fatalf("pre-cancelled terminal wait = %v", err)
+					}
+					if collect == "wait" {
+						status, err = caller.Wait(request)
+					} else {
+						status, err = caller.Status(StatusRequest{TurnID: started.TurnID})
+					}
+					if err != nil || status.State != "done" || status.Result == nil || *status.Result != terminal {
+						t.Fatalf("retained result = %#v %v", status, err)
+					}
+					if _, err = caller.Status(StatusRequest{TurnID: started.TurnID}); !errors.Is(err, ErrUnknownTurn) {
+						t.Fatalf("second collection = %v", err)
+					}
+				})
+			}
+		}
 	}
 }

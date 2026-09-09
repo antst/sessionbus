@@ -138,6 +138,11 @@ func (c *Caller) Status(request StatusRequest) (TurnStatus, error) {
 }
 
 func (c *Caller) Wait(request WaitRequest) (TurnStatus, error) {
+	return c.WaitContext(context.Background(), request)
+}
+
+// WaitContext cancels only the wait, leaving the run/result available for collection.
+func (c *Caller) WaitContext(ctx context.Context, request WaitRequest) (TurnStatus, error) {
 	if request.TurnID == "" || request.TimeoutMS != nil && *request.TimeoutMS < 0 {
 		return TurnStatus{}, errors.New("invalid wait request")
 	}
@@ -147,16 +152,21 @@ func (c *Caller) Wait(request WaitRequest) (TurnStatus, error) {
 	if run == nil {
 		return TurnStatus{}, ErrUnknownTurn
 	}
-	if request.TimeoutMS == nil {
-		<-run.done
-	} else {
+	var timeout <-chan time.Time
+	if request.TimeoutMS != nil {
 		timer := time.NewTimer(time.Duration(*request.TimeoutMS) * time.Millisecond)
 		defer timer.Stop()
-		select {
-		case <-run.done:
-		case <-timer.C:
-		}
+		timeout = timer.C
 	}
+	select {
+	case <-run.done:
+	case <-timeout:
+	case <-ctx.Done():
+	}
+	if err := ctx.Err(); err != nil {
+		return TurnStatus{}, err
+	}
+
 	return c.Status(StatusRequest{TurnID: request.TurnID})
 }
 

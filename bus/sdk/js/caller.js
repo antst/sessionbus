@@ -32,7 +32,7 @@ class Caller {
   action(name, args = {}, cancel) {
     const method = ACTION_METHODS[name];
     if (method) return this.connection.call(method, name === "forget" ? { ...args, forget: true } : args, cancel);
-    if (name === "start" || name === "status" || name === "wait") return Promise.resolve().then(() => this[name](args));
+    if (name === "start" || name === "status" || name === "wait") return Promise.resolve().then(() => this[name](args, cancel));
     return Promise.reject(new Error("unknown action"));
   }
 
@@ -57,15 +57,23 @@ class Caller {
     return this._view(run);
   }
 
-  async wait(request) {
+  // Aborting a wait leaves its run/result available for later collection.
+  async wait(request, cancel) {
     if (!localRequest(request, true)) throw new Error("invalid wait request");
     const run = this._find(request);
+    if (cancel?.aborted) throw cancel.reason;
     if (run.state !== "running") return this.status({ turn_id: run.id });
-    if (request.timeout_ms === undefined) { await run.settled; return this.status({ turn_id: run.id }); }
     return new Promise((resolve, reject) => {
-      let settled = false;
-      const stop = this.schedule(() => { if (!settled) { settled = true; try { resolve(run.state === "running" ? this._view(run) : this.status({ turn_id: run.id })); } catch (error) { reject(error); } } }, request.timeout_ms);
-      run.settled.then(() => { if (!settled) { settled = true; stop?.(); try { resolve(this.status({ turn_id: run.id })); } catch (error) { reject(error); } } });
+      let settled = false, stop;
+      const finish = () => {
+        if (settled) return;
+        settled = true; stop?.(); cancel?.removeEventListener("abort", finish);
+        if (cancel?.aborted) { reject(cancel.reason); return; }
+        try { resolve(run.state === "running" ? this._view(run) : this.status({ turn_id: run.id })); } catch (error) { reject(error); }
+      };
+      cancel?.addEventListener("abort", finish, { once: true });
+      if (request.timeout_ms !== undefined) stop = this.schedule(finish, request.timeout_ms);
+      run.settled.then(finish);
     });
   }
 
