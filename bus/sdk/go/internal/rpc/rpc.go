@@ -64,6 +64,9 @@ func (c *Conn) CallObserved(ctx context.Context, method string, params, result a
 }
 
 func (c *Conn) call(ctx context.Context, method string, params, result any, seen func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id, p := c.begin(method, params, result, seen)
 	select {
 	case err := <-p.done:

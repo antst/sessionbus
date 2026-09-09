@@ -6,10 +6,35 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
+
+type countedWriteConn struct {
+	net.Conn
+	writes atomic.Int32
+}
+
+func (c *countedWriteConn) Write(body []byte) (int, error) {
+	c.writes.Add(1)
+	return len(body), nil
+}
+
+func TestAlreadyCancelledCallDoesNotWrite(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	fd := &countedWriteConn{Conn: local}
+	c := New(fd, true, nil)
+	defer c.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.Call(ctx, "session.list", protocol.SessionListRequest{}, &protocol.SessionListResult{})
+	if !errors.Is(err, context.Canceled) || fd.writes.Load() != 0 || c.next != 0 {
+		t.Fatalf("cancelled call submitted: error=%v writes=%d next=%d", err, fd.writes.Load(), c.next)
+	}
+}
 
 func TestCancelledCallsDrainAtBound(t *testing.T) {
 	local, peer := net.Pipe()
