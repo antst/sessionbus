@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -20,13 +21,22 @@ import (
 type WorkerCallbacks interface {
 	Hello(context.Context) (HelloDescription, error)
 	Open(context.Context, OpenRequest) (OpenResult, error)
-	Run(context.Context, *Run, string) (TurnResult, error)
+	Run(context.Context, *Run, RunInput) (TurnResult, error)
 	Interrupt(context.Context, *Run) error
 	Deliver(context.Context, DeliveryRequest, *Run) (DeliveryReceipt, error)
 	Close(context.Context, SessionCloseRequest) error
 }
 
+// RunInput is exactly one caller input or an idle delivery seed.
+type RunInput struct {
+	Text     *string
+	Delivery *DeliveryRequest
+}
+
 type Run struct {
+	receipt     func(DeliveryReceipt, error) error
+	receiptOnce sync.Once
+
 	Native      any
 	context     context.Context
 	cancel      context.CancelFunc
@@ -42,7 +52,30 @@ func (r *Run) Done() <-chan struct{}         { return r.done }
 func (r *Run) Admitted()                     { r.admit.Do(func() { close(r.admitted) }) }
 func (r *Run) AdmittedDone() <-chan struct{} { return r.admitted }
 
+// ReportDelivery answers the original delivery RPC once. It may block on the
+// transport write; adapters must not call it while holding their native reader lock.
+func (r *Run) ReportDelivery(value DeliveryReceipt, failure error) error {
+	if r.receipt == nil {
+		return errors.New("run has no delivery seed")
+	}
+	called := false
+	var err error
+	r.receiptOnce.Do(func() { called = true; err = r.receipt(value, failure) })
+	if !called {
+		return errors.New("delivery receipt already reported")
+	}
+	return err
+}
+
 type Worker struct {
+	sessionID    string
+	records      []*workerRecord
+	changed      chan struct{}
+	generation   string
+	lastSequence uint64
+	acknowledged uint64
+	waiters      int
+
 	product      WorkerCallbacks
 	caller       *Caller
 	dial         func(context.Context, string, string) (net.Conn, error)
@@ -58,7 +91,7 @@ type Worker struct {
 }
 
 func NewWorker(product WorkerCallbacks) *Worker {
-	worker := &Worker{product: product, dial: (&net.Dialer{}).DialContext, closed: make(chan struct{})}
+	worker := &Worker{product: product, dial: (&net.Dialer{}).DialContext, closed: make(chan struct{}), changed: make(chan struct{})}
 	worker.caller = NewCaller(func(ctx context.Context, method string, params any) (result json.RawMessage, err error) {
 		err = worker.Call(ctx, method, params, &result)
 		return
@@ -112,19 +145,12 @@ func (w *Worker) handle(ctx context.Context, request *rpc.Request) {
 		go func() { w.reply(w.conn.Result(request, struct{}{})); _ = w.conn.Close() }()
 	case "session.open":
 		go w.open(w.context, request)
-	case "turn.run":
-		w.mu.Lock()
-		if !w.opened.Load() || w.run != nil {
-			w.mu.Unlock()
-			go w.answer(request, nil, protocol.Busy)
-			return
-		}
-		runCtx, cancel := context.WithCancel(w.context)
-		done, finish := context.WithCancel(context.Background())
-		slot := &Run{context: runCtx, cancel: cancel, done: done.Done(), finish: finish, admitted: make(chan struct{})}
-		w.run = slot
-		w.mu.Unlock()
-		go w.runTurn(w.context, request, slot)
+	case "turn.execute":
+		w.execute(request, nil)
+	case "turn.status", "turn.wait":
+		w.readRun(request)
+	case "turn.ack":
+		w.ackRun(request)
 	case "turn.interrupt":
 		w.mu.Lock()
 		if w.run == nil {
@@ -142,6 +168,11 @@ func (w *Worker) handle(ctx context.Context, request *rpc.Request) {
 		w.mu.Unlock()
 		go w.interrupt(request, slot, call)
 	case "message.deliver":
+		delivery := request.Params.(*DeliveryRequest)
+		if delivery.RunID != "" {
+			w.execute(request, delivery)
+			return
+		}
 		w.mu.Lock()
 		slot := w.run
 		closing := slot != nil && slot.done == nil
@@ -174,31 +205,12 @@ func (w *Worker) open(ctx context.Context, request *rpc.Request) {
 		w.reply(w.conn.Error(request, protocol.SpawnFailed, map[string]any{"stderr_tail": []string{err.Error()}}))
 		return
 	}
+	w.sessionID = result.SessionID
+	if _, host, ok := strings.Cut(request.Params.(*OpenRequest).Name, "@"); ok {
+		w.sessionID += "@" + host
+	}
 	w.opened.Store(true)
 	w.reply(w.conn.Result(request, result))
-}
-
-func (w *Worker) runTurn(_ context.Context, request *rpc.Request, slot *Run) {
-	result, err := w.product.Run(slot.context, slot, request.Params.(*protocol.TurnRunRequest).Input)
-	w.mu.Lock()
-	slot.cancel()
-	w.mu.Unlock()
-	if err != nil {
-		result = TurnResult{Outcome: "failed", Result: err.Error()}
-	}
-	result.Result, result.Truncated = truncate(result.Result)
-	w.mu.Lock()
-	if _, err = protocol.EncodeResult("turn.run", result); err == nil {
-		err = w.conn.Result(request, result)
-	}
-	if err == nil && w.run == slot {
-		w.run = nil
-	}
-	if err != nil {
-		_ = w.conn.Close()
-	}
-	slot.finish()
-	w.mu.Unlock()
 }
 
 func (w *Worker) interrupt(request *rpc.Request, run *Run, call bool) {
@@ -210,15 +222,18 @@ func (w *Worker) interrupt(request *rpc.Request, run *Run, call bool) {
 
 func (w *Worker) deliver(ctx context.Context, request *rpc.Request, run *Run) {
 	receipt, err := w.product.Deliver(ctx, *request.Params.(*DeliveryRequest), run)
+	w.reply(w.deliveryReply(request, receipt, err))
+}
+
+func (w *Worker) deliveryReply(request *rpc.Request, receipt DeliveryReceipt, err error) error {
 	var failure *ProtocolError
 	if errors.As(err, &failure) && failure.Code == protocol.Internal {
-		w.reply(w.conn.Error(request, failure.Code, failure.Data))
-		return
+		return w.conn.Error(request, failure.Code, failure.Data)
 	}
 	if err != nil {
 		receipt = DeliveryReceipt{Disposition: "rejected", Reason: err.Error()}
 	}
-	w.reply(w.conn.Result(request, receipt))
+	return w.conn.Result(request, receipt)
 }
 
 func (w *Worker) close(ctx context.Context, request *rpc.Request, slot *Run, interrupt bool) {

@@ -10,12 +10,12 @@ import (
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
-var Actions = []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget"}
+var Actions = []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}
 
 func (c *Caller) Action(ctx context.Context, action string, args json.RawMessage) (json.RawMessage, error) {
 	method := map[string]string{
 		"list": "session.list", "send": "message.send", "spawn": "lane.spawn", "describe": "lane.describe",
-		"run": "turn.run", "interrupt": "turn.interrupt", "close": "session.close",
+		"run": "turn.run", "start": "turn.start", "status": "turn.status", "wait": "turn.wait", "interrupt": "turn.interrupt", "close": "session.close",
 	}[action]
 	if method != "" {
 		params, err := protocol.DecodeParams(method, args)
@@ -26,12 +26,8 @@ func (c *Caller) Action(ctx context.Context, action string, args json.RawMessage
 		return result, err
 	}
 	switch action {
-	case "start":
-		return localAction(args, c.Start)
-	case "wait":
-		return localAction(args, func(request WaitRequest) (TurnStatus, error) { return c.WaitContext(ctx, request) })
-	case "status":
-		return localAction(args, c.Status)
+	case "ack":
+		return localAction(args, func(request RunRef) (struct{}, error) { return struct{}{}, c.Ack(ctx, request) })
 	case "forget":
 		return localAction(args, func(request SessionCloseRequest) (struct{}, error) {
 			request.Forget = true
