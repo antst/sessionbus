@@ -64,7 +64,12 @@ class Worker {
   shutdown() { this.connection?.close(); }
   _handle(request) {
     if (request.method === "session.superseded") { void this.connection.result(request, {}).finally(() => this.shutdown()); return; }
-    if (request.method === "session.open") { queueMicrotask(() => void this._open(request)); return; }
+    if (request.method === "session.open") {
+      if (this.opening || this.connection.signal.aborted || this.run && !this.run.Done) { void this._replyError(request, -32600); return; }
+      // Register before scheduling so EOF cleanup joins native Open adoption.
+      this.opening = Promise.resolve().then(() => this._open(request)).catch((error) => { callbackError("open", error); this.shutdown(); });
+      return;
+    }
     if (request.method === "turn.execute") { this._execute(request); return; }
     if (request.method === "turn.status" || request.method === "turn.wait") { void this._read(request); return; }
     if (request.method === "turn.ack") { void this._ack(request); return; }
@@ -88,9 +93,10 @@ class Worker {
   async _open(request) {
     if (request.params.policy?.idle_message === "run" && !this.supportsWake) { await this._replyError(request, -32008); return; }
     let result; try { result = await this.callbacks.open(this.controller.signal, request.params); } catch (error) { await this._replyError(request, -32009, { stderr_tail: [clean(error)] }); return; }
+    this.opened = true;
     const at = request.params.name.lastIndexOf("@");
     this.sessionID = result.session_id + (at < 0 ? "" : request.params.name.slice(at));
-    this.opened = true; try { await this.connection.result(request, result); } catch { this.shutdown(); }
+    try { await this.connection.result(request, result); } catch { this.shutdown(); }
   }
   _execute(request, delivery) {
     if (!this.opened || this.run || this.records.length >= 256) { void this._replyError(request, -32003); return; }
@@ -187,7 +193,7 @@ class Worker {
     await this._closeProduct(this.connection.signal);
     try { await this.connection.result(request, {}); } catch { this.shutdown(); } finally { this.shutdown(); }
   }
-  async _closeProduct(signal = this.controller.signal) { if (!this.opened) return; if (!this.productClose) this.productClose = Promise.resolve().then(() => this.callbacks.close(signal, this.closeRequest)).catch((error) => callbackError("close", error)); await this.productClose; }
+  async _closeProduct(signal = this.controller.signal) { await this.opening; if (!this.opened) return; if (!this.productClose) this.productClose = Promise.resolve().then(() => this.callbacks.close(signal, this.closeRequest)).catch((error) => callbackError("close", error)); await this.productClose; }
   async _replyError(request, code, data) { try { await this.connection.error(request, code, data); } catch { this.shutdown(); } }
 }
 
