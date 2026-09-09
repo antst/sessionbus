@@ -22,7 +22,11 @@ func addHost(args []string) error {
 	}
 	defaultConfig := os.Getenv("SESSIONBUS_HUB_CONFIG")
 	if defaultConfig == "" {
-		defaultConfig = filepath.Join(home, ".config/sessionbus/hub.json")
+		root := os.Getenv("XDG_CONFIG_HOME")
+		if root == "" {
+			root = filepath.Join(home, ".config")
+		}
+		defaultConfig = filepath.Join(root, "sessionbus/hub.json")
 	}
 	set := flag.NewFlagSet("sessionbus-hub add-host", flag.ContinueOnError)
 	config := set.String("config", defaultConfig, "hub host map")

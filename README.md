@@ -68,7 +68,10 @@ hub). Allow TCP 7419 through the hub firewall as appropriate. Host names must
 match the registration. `add-host` is idempotent for the same name/key, rejects
 implicit key replacement and duplicate secrets, and edits configuration only;
 restart the hub to load it. `SESSIONBUS_HUB_LISTEN` in `hub.env` changes the
-listener. `XDG_CONFIG_HOME` changes the installer's configuration location.
+listener. `XDG_CONFIG_HOME` changes the installer and `add-host` default configuration location.
+The host installer waits at most ten seconds for an authenticated local list response.
+Hub installation reports service activation only; inspect the service status/logs
+to confirm its listener. Preserved `hub.env` can override its default port and host map.
 
 ### Build or publish releases
 

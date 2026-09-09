@@ -143,7 +143,7 @@ EOF
  launchctl kickstart "gui/$(id -u)/$service"
 fi
 if [ "$role" = host ]; then
- "$prefix/bin/sessionbus-call" -name installer-check session.list '{}' >/dev/null
+ "$prefix/bin/sessionbus-call" -timeout 10s -name installer-check session.list '{}' >/dev/null
 fi
 printf 'Installed Sessionbus %s (%s) in %s\n' "$role" "$revision" "$prefix"
 case ":$PATH:" in *":$prefix/bin:"*) ;; *) printf 'Add this to your login shell profile: export PATH="$HOME/.local/bin:$PATH"\n';; esac
@@ -163,10 +163,13 @@ To join a hub:
 EOF
 else
  cat <<EOF
-The hub is listening on TCP 7419 with host map $config/hub.json.
-Allow that TCP port through your firewall when remote hosts should connect.
+The service manager has been asked to start the hub; listener health is not asserted.
+Defaults: TCP 7419, host map $config/hub.json.
+Existing $config/hub.env overrides are preserved and can change both.
+Check service status and logs before allowing the configured port through your firewall.
 To add a host, obtain its generated host.key through a secure channel, then:
-  sessionbus-hub add-host -config "$config/hub.json" -secret-file /path/to/host.key HOSTNAME
+  sessionbus-hub add-host -secret-file /path/to/host.key HOSTNAME
+If hub.env sets SESSIONBUS_HUB_CONFIG, add -config /that/actual/map.json.
 Restart sessionbus-hub after changing the map. Existing host secrets are preserved.
 EOF
 fi

@@ -159,3 +159,18 @@ func writeResult(fd net.Conn, request protocol.Frame, result any) error {
 	}
 	return err
 }
+
+func TestTimeoutIncludesMissingDaemon(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	socket := filepath.Join(testsocket.Directory(t), "absent.sock")
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-socket", socket, "-timeout", "5ms", "session.list"}, &stdout, &stderr) }()
+	select {
+	case code := <-done:
+		if code != 1 || !bytes.Contains(stdout.Bytes(), []byte("context deadline exceeded")) {
+			t.Fatalf("%d %s %s", code, stdout.String(), stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection deadline did not stop CLI")
+	}
+}

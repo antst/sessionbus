@@ -24,11 +24,22 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	set := flag.NewFlagSet("sessionbus-call", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	name, groups, socket := "sessionbus-call", "", os.Getenv("SESSIONBUS_SOCKET")
+	timeout := set.Duration("timeout", 0, "deadline for connection and call (0 disables)")
 	set.StringVar(&name, "name", name, "peer name")
 	set.StringVar(&groups, "g", groups, "comma-separated groups")
 	set.StringVar(&socket, "socket", socket, "sessionbus unix socket")
 	if set.Parse(arguments) != nil || set.NArg() < 1 || set.NArg() > 2 {
 		return 2
+	}
+	if *timeout < 0 {
+		fmt.Fprintln(stderr, "timeout must not be negative")
+		return 2
+	}
+	ctx := context.Background()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
 	}
 	params := json.RawMessage(`{}`)
 	if set.NArg() == 2 {
@@ -56,10 +67,15 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return sdk.DeliveryReceipt{Disposition: "injected"}, nil
 	})
 	if err == nil {
-		<-peer.Ready()
 		defer peer.Shutdown()
+		select {
+		case <-peer.Ready():
+		case <-ctx.Done():
+			writeError(stdout, ctx.Err())
+			return 1
+		}
 		var result json.RawMessage
-		result, err = peer.Call(context.Background(), set.Arg(0), params)
+		result, err = peer.Call(ctx, set.Arg(0), params)
 		if err == nil {
 			fmt.Fprintln(stdout, string(result))
 			return 0
