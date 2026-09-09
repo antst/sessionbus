@@ -33,7 +33,7 @@ func TestCallerMapsWireMethods(t *testing.T) {
 			"message.send":   MessageSendResult{MessageID: "message", Deliveries: []protocol.MessageSendDelivery{}},
 			"lane.describe":  LaneDescribeResult{Product: "example-peer", SupportedOpenFields: []string{}, ExtraArguments: []ExtraArgument{}},
 			"lane.spawn":     LaneSpawnResult{SessionID: "lane@local"},
-			"turn.run":       TurnResult{Outcome: "completed", Result: "done"},
+			"turn.run":       RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &TurnResult{Outcome: "completed", Result: "done"}},
 			"turn.interrupt": struct{}{},
 			"session.close":  struct{}{},
 		}
@@ -76,72 +76,6 @@ func TestCallerSchemaErrorNamesPathAndConstraint(t *testing.T) {
 	want := `LaneSpawnRequest: "name" is not allowed with "resume_session_id"`
 	if err == nil || err.Error() != want || called {
 		t.Fatalf("error = %v, called = %t", err, called)
-	}
-}
-
-func TestCallerSugarMatchesJavaScriptShapes(t *testing.T) {
-	fixtures := loadCallerFixtures(t)
-	type terminal struct {
-		result TurnResult
-		err    error
-	}
-	terminals := make(chan terminal)
-	c := newCaller(func(_ context.Context, _ string, _ any, result any) error {
-		terminal := <-terminals
-		if terminal.err == nil {
-			*result.(*TurnResult) = terminal.result
-		}
-		return terminal.err
-	})
-	sequence := fixtures.Sequences.TargetRelease
-	request := TurnRunRequest{SessionID: sequence.SessionID, Input: sequence.FirstInput}
-	first, _ := c.Start(request)
-	assertJSON(t, first, fixtures.Shapes.Start.Result)
-	if _, err := c.Start(request); !isCode(err, protocol.Busy) {
-		t.Fatalf("same-target start error = %v", err)
-	}
-	zero := int64(0)
-	running, err := c.Wait(WaitRequest{TurnID: first.TurnID, TimeoutMS: &zero})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertJSON(t, running, fixtures.Shapes.Running.Result)
-	c.mu.Lock()
-	firstDone := c.runs[first.TurnID].done
-	c.mu.Unlock()
-	terminals <- terminal{result: fixtures.Shapes.Done.Terminal}
-	<-firstDone
-	second, err := c.Start(TurnRunRequest{SessionID: sequence.SessionID, Input: sequence.SecondInput})
-	if err != nil || first.TurnID != sequence.FirstTurnID || second.TurnID != sequence.SecondTurnID {
-		t.Fatalf("target release = %#v %#v, %v", first, second, err)
-	}
-	done, err := c.Status(StatusRequest{TurnID: first.TurnID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertJSON(t, done, fixtures.Shapes.Done.Result)
-	if _, err = c.Status(StatusRequest{TurnID: first.TurnID}); !errors.Is(err, ErrUnknownTurn) {
-		t.Fatalf("collected status error = %v", err)
-	}
-	terminals <- terminal{result: fixtures.Shapes.Done.Terminal}
-	_, _ = c.Wait(WaitRequest{TurnID: second.TurnID})
-
-	for _, failure := range []struct {
-		err  error
-		want TurnStatus
-	}{{rpc.ErrClosed, fixtures.Shapes.EOF.Result}, {&ProtocolError{Code: fixtures.Shapes.WireError.Code, Message: fixtures.Shapes.WireError.Message}, fixtures.Shapes.WireError.Result}} {
-		caller := newCaller(func(context.Context, string, any, any) error { return failure.err })
-		started, _ := caller.Start(fixtures.Shapes.Start.Request)
-		unavailable, waitErr := caller.Wait(WaitRequest{TurnID: started.TurnID})
-		if waitErr != nil {
-			t.Fatal(waitErr)
-		}
-		assertJSON(t, unavailable, failure.want)
-	}
-	for _, invalid := range fixtures.Sequences.InvalidLocalRequests {
-		if err := runInvalidLocal(c, invalid.Operation, invalid.Request); err == nil || err.Error() != invalid.Error {
-			t.Fatalf("%s error = %v", invalid.Operation, err)
-		}
 	}
 }
 
@@ -196,52 +130,9 @@ func isCode(err error, code int) bool {
 }
 
 type callerFixtures struct {
-	Shapes struct {
-		Start     startFixture
-		Running   resultFixture[TurnStatus]
-		Done      doneFixture
-		EOF       resultFixture[TurnStatus]
-		WireError wireErrorFixture `json:"wire_error"`
-	}
 	Sequences struct {
-		TargetRelease        targetReleaseFixture  `json:"target_release_before_collection"`
-		InvalidLocalRequests []invalidLocalFixture `json:"invalid_local_requests"`
-		CrossedRehello       crossedRehelloFixture `json:"crossed_rehello"`
+		CrossedRehello crossedRehelloFixture `json:"crossed_rehello"`
 	}
-}
-
-type startFixture struct {
-	Request TurnRunRequest
-	Result  StartResult
-}
-
-type resultFixture[T any] struct {
-	Result T
-}
-
-type doneFixture struct {
-	Terminal TurnResult
-	Result   TurnStatus
-}
-
-type wireErrorFixture struct {
-	Code    int
-	Message string
-	Result  TurnStatus
-}
-
-type targetReleaseFixture struct {
-	SessionID    string `json:"session_id"`
-	FirstInput   string `json:"first_input"`
-	SecondInput  string `json:"second_input"`
-	FirstTurnID  string `json:"first_turn_id"`
-	SecondTurnID string `json:"second_turn_id"`
-}
-
-type invalidLocalFixture struct {
-	Operation string
-	Request   json.RawMessage
-	Error     string
 }
 
 func loadCallerFixtures(t *testing.T) callerFixtures {
@@ -257,92 +148,106 @@ func loadCallerFixtures(t *testing.T) callerFixtures {
 	return fixtures
 }
 
-func runInvalidLocal(c *Caller, operation string, raw json.RawMessage) error {
-	switch operation {
-	case "start":
-		var request TurnRunRequest
-		_ = json.Unmarshal(raw, &request)
-		_, err := c.Start(request)
-		return err
-	case "status":
-		var request StatusRequest
-		_ = json.Unmarshal(raw, &request)
-		_, err := c.Status(request)
-		return err
-	default:
-		var request WaitRequest
-		_ = json.Unmarshal(raw, &request)
-		_, err := c.Wait(request)
-		return err
-	}
-}
-
-func TestCallerCancelledWaitRetainsResult(t *testing.T) {
+func TestCallerCancelledWaitRetainsWorkerResult(t *testing.T) {
 	for _, action := range []bool{false, true} {
 		for _, bounded := range []bool{false, true} {
 			for _, collect := range []string{"status", "wait"} {
 				t.Run(fmt.Sprintf("action=%t/bounded=%t/collect=%s", action, bounded, collect), func(t *testing.T) {
-					client, server := net.Pipe()
-					requests := make(chan *rpc.Request, 1)
-					daemon := rpc.New(server, false, func(_ context.Context, request *rpc.Request) { requests <- request })
-					wire := rpc.New(client, true, func(context.Context, *rpc.Request) {})
-					t.Cleanup(func() { _ = wire.Close(); _ = daemon.Close() })
-					caller := NewCaller(func(ctx context.Context, method string, params any) (raw json.RawMessage, err error) {
-						err = wire.Call(ctx, method, params, &raw)
-						return
-					})
-					started, err := caller.Start(TurnRunRequest{SessionID: "lane@local", Input: "work"})
-					mustRPC(t, err)
-					native := <-requests
-					request := WaitRequest{TurnID: started.TurnID}
+					release, entered := make(chan struct{}), make(chan struct{})
+					requests := make(chan *rpc.Request, 16)
+					p := &cursorProduct{run: func(context.Context, *Run, RunInput) (TurnResult, error) {
+						close(entered)
+						<-release
+						return TurnResult{Outcome: "completed", Result: "retained"}, nil
+					}}
+					_, wire := cursorWire(t, p, func(r *rpc.Request) { requests <- r })
+					cursorOpen(t, wire)
+					if err := cursorExecute(wire, "native@local", "g/1"); err != nil {
+						t.Fatal(err)
+					}
+					<-entered
+					caller := newCaller(wire.Call)
+					request := WaitRequest{SessionID: "native@local", RunID: "g/1"}
 					if bounded {
 						timeout := int64(60000)
 						request.TimeoutMS = &timeout
 					}
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
-					wait := func() error {
-						if action {
-							raw, marshalErr := json.Marshal(request)
-							mustRPC(t, marshalErr)
-							_, callErr := caller.Action(ctx, "wait", raw)
-							return callErr
-						}
-						_, callErr := caller.WaitContext(ctx, request)
-						return callErr
-					}
 					waiting := make(chan error, 1)
-					go func() { waiting <- wait() }()
+					go func() {
+						if action {
+							raw, _ := json.Marshal(request)
+							_, err := caller.Action(ctx, "wait", raw)
+							waiting <- err
+						} else {
+							_, err := caller.WaitContext(ctx, request)
+							waiting <- err
+						}
+					}()
+					for r := range requests {
+						if r.Method == "turn.wait" {
+							break
+						}
+					}
 					cancel()
-					if err = <-waiting; !errors.Is(err, context.Canceled) {
-						t.Fatalf("cancelled wait = %v", err)
+					if err := <-waiting; !errors.Is(err, context.Canceled) {
+						t.Fatalf("cancelled wait: %v", err)
 					}
-					status, err := caller.Status(StatusRequest{TurnID: started.TurnID})
-					if err != nil || status.State != "running" {
-						t.Fatalf("run after cancel: %#v %v", status, err)
+					close(release)
+					// A replacement Caller reaches the same resident cursor; the canceled
+					// correlation drains its late response before this subsequent reply.
+					replacement := newCaller(wire.Call)
+					got, err := replacement.Wait(WaitRequest{SessionID: request.SessionID, RunID: request.RunID})
+					if err != nil || got.Result == nil || got.Result.Result != "retained" {
+						t.Fatalf("retained %#v %v", got, err)
 					}
-					caller.mu.Lock()
-					done := caller.runs[started.TurnID].done
-					caller.mu.Unlock()
-					terminal := TurnResult{Outcome: "completed", Result: "retained"}
-					mustRPC(t, daemon.Result(native, terminal))
-					<-done
-					if err = wait(); !errors.Is(err, context.Canceled) {
-						t.Fatalf("pre-cancelled terminal wait = %v", err)
+					if _, err = caller.WaitContext(ctx, request); !errors.Is(err, context.Canceled) {
+						t.Fatalf("pre-cancel wait %v", err)
 					}
-					if collect == "wait" {
-						status, err = caller.Wait(request)
+					if collect == "status" {
+						got, err = replacement.Status(context.Background(), ReadRequest{SessionID: request.SessionID, RunID: request.RunID})
 					} else {
-						status, err = caller.Status(StatusRequest{TurnID: started.TurnID})
+						got, err = replacement.Wait(request)
 					}
-					if err != nil || status.State != "done" || status.Result == nil || *status.Result != terminal {
-						t.Fatalf("retained result = %#v %v", status, err)
+					if err != nil || got.Result == nil || got.Result.Result != "retained" {
+						t.Fatalf("second read %#v %v", got, err)
 					}
-					if _, err = caller.Status(StatusRequest{TurnID: started.TurnID}); !errors.Is(err, ErrUnknownTurn) {
-						t.Fatalf("second collection = %v", err)
+					ref := RunRef{SessionID: request.SessionID, RunID: request.RunID}
+					if err = replacement.Ack(ctx, ref); !errors.Is(err, context.Canceled) {
+						t.Fatalf("pre-canceled ack %v", err)
 					}
+					if _, err = replacement.Status(context.Background(), ReadRequest{SessionID: ref.SessionID, RunID: ref.RunID}); err != nil {
+						t.Fatal(err)
+					}
+					if err = replacement.Ack(context.Background(), ref); err != nil {
+						t.Fatal(err)
+					}
+					_, err = replacement.Status(context.Background(), ReadRequest{SessionID: ref.SessionID, RunID: ref.RunID})
+					cursorCode(t, err, protocol.UnknownSession)
 				})
 			}
 		}
+	}
+}
+
+func TestCallerSubmittedAckSettlesDespiteCancellation(t *testing.T) {
+	client, server := net.Pipe()
+	requests := make(chan *rpc.Request, 1)
+	daemon := rpc.New(server, false, func(_ context.Context, r *rpc.Request) { requests <- r })
+	wire := rpc.New(client, true, func(context.Context, *rpc.Request) {})
+	t.Cleanup(func() { _ = wire.Close(); _ = daemon.Close() })
+	caller := newCaller(wire.Call)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caller.Ack(ctx, RunRef{SessionID: "native@local", RunID: "g/1"}) }()
+	request := <-requests
+	cancel()
+	if err := daemon.Result(request, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("submitted ack abandoned: %v", err)
 	}
 }

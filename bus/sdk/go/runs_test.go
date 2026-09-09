@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 )
 
 type cursorProduct struct {
+	close func()
 	open  func()
 	run   func(context.Context, *Run, RunInput) (TurnResult, error)
 	calls atomic.Int32
@@ -40,14 +42,24 @@ func (*cursorProduct) Interrupt(context.Context, *Run) error { return nil }
 func (*cursorProduct) Deliver(context.Context, DeliveryRequest, *Run) (DeliveryReceipt, error) {
 	return DeliveryReceipt{Disposition: "written"}, nil
 }
-func (*cursorProduct) Close(context.Context, SessionCloseRequest) error { return nil }
+func (p *cursorProduct) Close(context.Context, SessionCloseRequest) error {
+	if p.close != nil {
+		p.close()
+	}
+	return nil
+}
 
-func cursorWire(t *testing.T, p *cursorProduct) (*Worker, *rpc.Conn) {
+func cursorWire(t *testing.T, p *cursorProduct, observe ...func(*rpc.Request)) (*Worker, *rpc.Conn) {
 	t.Helper()
 	left, right := net.Pipe()
 	w := NewWorker(p)
 	w.context, w.cancel = context.WithCancel(context.Background())
-	w.conn = rpc.New(left, true, w.handle)
+	w.conn = rpc.New(left, true, func(ctx context.Context, r *rpc.Request) {
+		for _, call := range observe {
+			call(r)
+		}
+		w.handle(ctx, r)
+	})
 	var server *rpc.Conn
 	server = rpc.New(right, false, func(_ context.Context, r *rpc.Request) {
 		go func() {
@@ -172,5 +184,80 @@ func TestWorkerCursorChecksLargestReplyEnvelope(t *testing.T) {
 	}
 	if got := cursorWait(t, c, "g/1"); got.State != "unavailable" || got.Result != nil {
 		t.Fatalf("oversized retained result %#v", got)
+	}
+}
+
+func TestWorkerCursorFIFOAndCapacity(t *testing.T) {
+	p := &cursorProduct{}
+	w, c := cursorWire(t, p)
+	cursorOpen(t, c)
+	for sequence := 1; sequence <= protocol.MaxOperations; sequence++ {
+		id := "g/" + strconv.Itoa(sequence)
+		if err := cursorExecute(c, "native@local", id); err != nil {
+			t.Fatal(err)
+		}
+		_ = cursorWait(t, c, id)
+	}
+	cursorCode(t, cursorExecute(c, "native@local", "g/257"), protocol.Busy)
+	cursorCode(t, c.Call(context.Background(), "turn.ack", RunRef{SessionID: "native@local", RunID: "g/2"}, &struct{}{}), protocol.Busy)
+	var oldest RunStatus
+	if err := c.Call(context.Background(), "turn.status", ReadRequest{SessionID: "native@local"}, &oldest); err != nil || oldest.RunID != "g/1" {
+		t.Fatalf("oldest %#v %v", oldest, err)
+	}
+	if err := c.Call(context.Background(), "turn.ack", RunRef{SessionID: "native@local", RunID: "g/1"}, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cursorExecute(c, "native@local", "g/257"); err != nil {
+		t.Fatal(err)
+	}
+	_ = cursorWait(t, c, "g/257")
+	w.mu.Lock()
+	count := len(w.records)
+	w.mu.Unlock()
+	if count != protocol.MaxOperations {
+		t.Fatalf("records %d", count)
+	}
+}
+
+func TestWorkerCursorCloseSettlesAdmittedReader(t *testing.T) {
+	release, entered, closeEntered, closeRelease := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	p := &cursorProduct{run: func(context.Context, *Run, RunInput) (TurnResult, error) {
+		<-release
+		return TurnResult{Outcome: "completed", Result: "retained"}, nil
+	}, close: func() { close(closeEntered); <-closeRelease }}
+	w, c := cursorWire(t, p, func(r *rpc.Request) {
+		if r.Method == "turn.wait" {
+			close(entered)
+		}
+	})
+	cursorOpen(t, c)
+	if err := cursorExecute(c, "native@local", "g/1"); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan error, 1)
+	var status RunStatus
+	go func() {
+		read <- c.Call(context.Background(), "turn.wait", WaitRequest{SessionID: "native@local", RunID: "g/1"}, &status)
+	}()
+	<-entered
+	closing := make(chan error, 1)
+	go func() {
+		closing <- c.Call(context.Background(), "session.close", SessionCloseRequest{SessionID: "native@local"}, &struct{}{})
+	}()
+	close(release)
+	if err := <-read; err != nil || status.State != "done" {
+		t.Fatalf("read %#v %v", status, err)
+	}
+	<-closeEntered
+	w.mu.Lock()
+	count := w.waiters
+	w.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("Close raced %d readers", count)
+	}
+	cursorCode(t, c.Call(context.Background(), "turn.status", ReadRequest{SessionID: "native@local"}, &RunStatus{}), protocol.Busy)
+	close(closeRelease)
+	if err := <-closing; err != nil {
+		t.Fatal(err)
 	}
 }

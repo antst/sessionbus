@@ -83,6 +83,7 @@ func (w *Worker) execute(request *rpc.Request, delivery *DeliveryRequest) {
 
 func (w *Worker) runTurn(slot *Run, record *workerRecord, seed RunInput) {
 	result, err := w.product.Run(slot.context, slot, seed)
+	slot.cancel()
 	status := record.status
 	status.State, status.Result = "done", &result
 	if err != nil {
@@ -102,7 +103,6 @@ func (w *Worker) runTurn(slot *Run, record *workerRecord, seed RunInput) {
 	if status.Result != nil {
 		ready.Outcome = status.Result.Outcome
 	}
-	slot.cancel()
 	// Publish on the ready acknowledgement before the reader dispatches a later
 	// run/close frame. No worker lock is held across this duplex RPC.
 	err = w.conn.CallObserved(w.context, "turn.ready", ready, &struct{}{}, func() error {
@@ -139,7 +139,7 @@ func (w *Worker) readRun(request *rpc.Request) {
 		input = *request.Params.(*ReadRequest)
 	}
 	w.mu.Lock()
-	if w.waiters >= protocol.MaxOperations {
+	if w.waiters >= protocol.MaxOperations || w.run != nil && w.run.done == nil {
 		w.mu.Unlock()
 		go w.answer(request, nil, protocol.Busy)
 		return
@@ -147,7 +147,7 @@ func (w *Worker) readRun(request *rpc.Request) {
 	w.waiters++
 	w.mu.Unlock()
 	go func() {
-		defer func() { w.mu.Lock(); w.waiters--; w.mu.Unlock() }()
+		defer func() { w.mu.Lock(); w.waiters--; close(w.changed); w.changed = make(chan struct{}); w.mu.Unlock() }()
 		var deadline <-chan time.Time
 		if timeout != nil {
 			timer := time.NewTimer(time.Duration(*timeout) * time.Millisecond)

@@ -254,6 +254,20 @@ func (w *Worker) close(ctx context.Context, request *rpc.Request, slot *Run, int
 	if slot != nil {
 		<-slot.done
 	}
+	for {
+		w.mu.Lock()
+		count, changed := w.waiters, w.changed
+		w.mu.Unlock()
+		if count == 0 {
+			break
+		}
+		select {
+		case <-changed:
+		case <-w.conn.Context().Done():
+			w.cancel()
+			return
+		}
+	}
 	w.cancel()
 	w.closeProduct(ctx)
 	w.reply(w.conn.Result(request, struct{}{}))

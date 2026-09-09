@@ -24,7 +24,8 @@ class FakeProduct {
     return { product: "example-peer", supported_open_fields: [], extra_arguments: [] };
   }
   open(_cancel, request) { this.calls[1]++; assert.deepEqual(request, openRequest); return { session_id: "product-session" }; }
-  async run(cancel, run, input) {
+  async run(cancel, run, seed) {
+    const input = seed.text;
     this.calls[2]++;
     if (input === "admission") { assert.equal(this.admitted, true); this.started.resolve(); return { outcome: "completed", result: "" }; }
     if (input === "block") { this.started.resolve(run); await this.release.promise; if (run.Interrupted()) return { outcome: "interrupted", result: "" }; run.Native = "native"; return { outcome: "completed", result: "" }; }
@@ -108,7 +109,7 @@ test("worker waits for orderly product close across EOF", async (t) => {
 test("one chunk is admitted before its first callback", async (t) => {
   const product = new FakeProduct(); product.started = deferred(); const { worker } = await harness(t, product);
   worker.connection.result = () => Promise.resolve(); worker.connection.error = () => { product.admitted = true; return Promise.resolve(); };
-  const frame = (id, input) => JSON.stringify({ jsonrpc: "2.0", id, method: "turn.run", params: { ...target, input } }) + "\n";
+  const frame = (id, input) => JSON.stringify({ jsonrpc: "2.0", id, method: "turn.execute", params: { ...target, run_id: `fixture/${id-1}`, input } }) + "\n";
   worker.connection._data(Buffer.from(frame(2, "admission") + frame(3, "again"))); await product.started.promise;
 });
 
@@ -120,13 +121,14 @@ test("peer replace settles old runs and reconnects with the new identity", async
   await first.daemon.result(await first.next(), {}); await peer.ready;
   const before = structuredClone(peer.identity);
   await assert.rejects(peer.replace({ ...before, name: "same" }), /invalid replace identity/); assert.deepEqual(peer.identity, before);
-  const started = peer.caller.start({ session_id: "lane@local", input: "block" }), run = await first.next();
+  const starting = peer.caller.start({ session_id: "lane@local", input: "block" }), run = await first.next();
+  await first.daemon.result(run, { session_id: "lane@local", run_id: "g/1" }); const started = await starting;
   const replacementIdentity = { product: "native-product", session_id: "new", name: "new", groups: ["new"], info: { revision: 1 } };
   const replaced = peer.replace(replacementIdentity), replacement = await first.next(); replacementIdentity.groups.push("mutated"); replacementIdentity.info.revision = 9;
-  assert.deepEqual(await peer.caller.wait({ turn_id: started.turn_id }), { turn_id: "t-1", session_id: "lane@local", state: "unavailable", reason: "-32002 not_connected" });
+  await assert.rejects(peer.caller.wait(started), /not connected/);
   await assert.rejects(peer.call("session.list", {}), /not connected/);
   const update = { name: "retitled", info: { revision: 2 } }; await assert.rejects(peer.rehello(undefined, update.name, update.info), /not connected/); update.info.revision = 9;
-  await first.daemon.error(run, -32002); await first.daemon.result(replacement, {});
+  await first.daemon.result(replacement, {});
   const corrective = await first.next(); assert.deepEqual(corrective.params, { protocol: 1, product: "native-product", session_id: "new", name: "retitled", groups: ["new"], info: { revision: 2 } });
   await first.daemon.result(corrective, {}); await replaced;
   first.daemon.close(); await scheduledReady.promise; scheduled.shift()();
@@ -206,11 +208,22 @@ async function harness(t, product, options = {}) {
   const worker = new Worker(product, env, { connect: (socket) => { assert.equal(socket, "/fixture/socket"); return workerSocket; } }); product.worker = worker;
   const daemon = new Connection(daemonSocket, false, (request) => {
     if (request.method === "session.hello") { if (options.acknowledge === false) daemon.close(); else void daemon.result(request, {}); hello.resolve(); }
+    if (request.method === "turn.ready") void daemon.result(request, {});
     if (request.method === "session.list") void (worker.opened ? daemon.result(request, { sessions: [] }) : daemon.error(request, -32011));
   });
   const serving = worker.serve().catch((error) => error); await hello.promise;
   t.after(async () => { worker.shutdown(); daemon.close(); await serving; });
   if (options.open !== false && options.acknowledge !== false) assert.deepEqual(await daemon.call("session.open", openRequest), { session_id: "product-session" });
+  // Translate the public blocking run into the real daemon/worker protocol.
+  const call = daemon.call.bind(daemon); let sequence = 0;
+  daemon.call = async (method,params,signal) => {
+    if (method !== "turn.run") return call(method,params,signal);
+    const run_id = `fixture/${++sequence}`;
+    const execute = call("turn.execute",{...params,run_id},signal);
+    const reading = call("turn.wait",{session_id:params.session_id,run_id},signal); reading.catch(() => {});
+    try { await execute; } catch (error) { sequence--; throw error; }
+    return reading;
+  };
   return { worker, daemon, workerSocket, serving };
 }
 
@@ -228,8 +241,12 @@ for (const row of rows) test(`lifecycle: ${row.name}`, async (t) => {
     }
     case "describe-eof": { const { serving } = await harness(t, product, { acknowledge: false, open: false }); await serving; break; }
     case "terminal-results": {
-      const { daemon } = await harness(t, product); const expected = { ok: ["completed", "ok", false], interrupted: ["interrupted", "", false], fail: ["failed", "failed exactly", false], completed: ["completed", "", false], long: ["completed", "x".repeat(262144), true] };
-      for (const [input, want] of Object.entries(expected)) { result = await daemon.call("turn.run", { ...target, input }); assert.deepEqual([result.outcome, result.result, !!result.truncated], want); } break;
+      const { daemon } = await harness(t, product);
+      for (const input of ["ok", "interrupted", "fail", "completed", "long"]) {
+        result = await daemon.call("turn.run", { ...target, input });
+        if (["fail", "long"].includes(input)) { assert.equal(result.state, "unavailable"); assert.equal(result.result, undefined); }
+        else assert.deepEqual(result.result, { outcome: input === "interrupted" ? "interrupted" : "completed", result: input === "ok" ? input : "" });
+      } break;
     }
     case "one-run": case "one-interrupt": case "interrupt-error": case "full-duplex": case "callback-originated-method": case "close-during-run": case "run-done": {
       product.started = deferred(); product.release = deferred(); const { daemon } = await harness(t, product); const running = daemon.call("turn.run", { ...target, input: "block" }); const run = await product.started.promise;
@@ -249,7 +266,7 @@ for (const row of rows) test(`lifecycle: ${row.name}`, async (t) => {
     case "peer-lifetime": { await peerLifetime(); const { daemon, serving } = await harness(t, product, { open: false }); await daemon.call("session.superseded", {}); await serving; break; }
     case "wrong-direction-request": { const { daemon, serving } = await harness(t, product, { open: false }); await errorCode(daemon.call("session.hello", { protocol: 1, product: "example-peer", launch_token: "again", supported_open_fields: [], extra_arguments: [] }), -32602); await serving; break; }
     case "terminal-before-interrupt": {
-      const { daemon, worker } = await harness(t, product); const entered = deferred(), release = deferred(), result = worker.connection.result.bind(worker.connection); worker.connection.result = async (request, value) => { if (request.method === "turn.run") { entered.resolve(); await release.promise; } return result(request, value); };
+      const { daemon, worker } = await harness(t, product); const entered = deferred(), release = deferred(), call = worker.connection.call.bind(worker.connection); worker.connection.call = async (method, ...args) => { if (method === "turn.ready") { entered.resolve(); await release.promise; } return call(method, ...args); };
       const running = daemon.call("turn.run", { ...target, input: "fail" }); await entered.promise; await errorCode(daemon.call("turn.interrupt", target), -32004); release.resolve(); await running; break;
     }
     case "idle-close-deliver": {
