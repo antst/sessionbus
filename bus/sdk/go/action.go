@@ -29,7 +29,7 @@ func (c *Caller) Action(ctx context.Context, action string, args json.RawMessage
 	case "start":
 		return localAction(args, c.Start)
 	case "wait":
-		return localAction(args, c.Wait)
+		return localAction(args, func(request WaitRequest) (TurnStatus, error) { return c.WaitContext(ctx, request) })
 	case "status":
 		return localAction(args, c.Status)
 	case "forget":

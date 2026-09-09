@@ -141,3 +141,49 @@ test("crossed rehello preserves the fixture's newest identity", async (t) => {
   await daemon.result(corrective, {}); await first;
   assert.deepEqual([peer.identity.name, peer.identity.info.nested.value], ["second", "second"]);
 });
+
+for (const action of [false, true]) for (const timeout_ms of [undefined, 60000]) for (const collect of ["status", "wait"]) {
+  test(`${action ? "action" : "direct"} cancelled ${timeout_ms === undefined ? "unbounded" : "bounded"} wait retains result for ${collect}`, async (t) => {
+    const [clientSocket, daemonSocket] = pair(), arrived = deferred(), timers = [];
+    const daemon = new Connection(daemonSocket, false, (request) => arrived.resolve(request));
+    const connection = new Connection(clientSocket, true);
+    const caller = new Caller(connection, { schedule: (call) => { const timer = { call, stopped: false }; timers.push(timer); return () => { timer.stopped = true; }; } });
+    t.after(() => { connection.close(); daemon.close(); });
+    const started = caller.start(fixtures.shapes.start.request), runRequest = await arrived.promise;
+    const request = { ...started, ...(timeout_ms === undefined ? {} : { timeout_ms }) };
+    const controller = new AbortController(), reason = new Error("tool wait cancelled");
+    const wait = (signal) => action ? caller.action("wait", request, signal) : caller.wait(request, signal);
+    const waiting = wait(controller.signal);
+    await Promise.resolve();
+    controller.abort(reason);
+    await assert.rejects(waiting, (error) => error === reason);
+    assert.equal(caller.status(started).state, "running");
+    assert.equal(connection.pending.size, 1);
+    if (timeout_ms !== undefined) { assert.equal(timers[0].stopped, true); timers[0].call(); }
+    await daemon.result(runRequest, fixtures.shapes.done.terminal);
+    await caller.runs.get(started.turn_id).settled;
+    await assert.rejects(wait(controller.signal), (error) => error === reason);
+    const result = collect === "wait" ? await caller.wait(started) : caller.status(started);
+    assert.deepEqual(result, fixtures.shapes.done.result);
+    assert.throws(() => caller.status(started), /unknown_turn/);
+  });
+}
+
+test("wait removes abort listeners after cancellation, timeout, or terminal", async (t) => {
+  const { getEventListeners } = require("node:events");
+  for (const end of ["abort", "timeout", "terminal"]) {
+    const [clientSocket, daemonSocket] = pair(), arrived = deferred(); let timer, stops = 0;
+    const daemon = new Connection(daemonSocket, false, (request) => arrived.resolve(request));
+    const connection = new Connection(clientSocket, true), caller = new Caller(connection, { schedule: (call) => { timer = call; return () => stops++; } });
+    t.after(() => { connection.close(); daemon.close(); });
+    const started = caller.start(fixtures.shapes.start.request), runRequest = await arrived.promise;
+    const controller = new AbortController();
+    const waiting = caller.wait({ ...started, timeout_ms: 60000 }, controller.signal);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 1);
+    if (end === "abort") { controller.abort(); await assert.rejects(waiting, { name: "AbortError" }); }
+    else if (end === "timeout") { timer(); assert.equal((await waiting).state, "running"); }
+    else { await daemon.result(runRequest, fixtures.shapes.done.terminal); assert.equal((await waiting).state, "done"); }
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0); assert.equal(stops, 1);
+    controller.abort(); timer(); assert.equal(stops, 1);
+  }
+});

@@ -11,6 +11,13 @@ The Go and JavaScript SDKs are MIT-licensed under
 [`bus/sdk/go/LICENSE`](bus/sdk/go/LICENSE) and
 [`bus/sdk/js/LICENSE`](bus/sdk/js/LICENSE).
 
+Caller waits are cancellable: JavaScript `caller.wait(request, signal)` and
+`caller.action("wait", request, signal)` accept an `AbortSignal`; Go provides
+`caller.WaitContext(ctx, request)` and forwards the context from `Action`.
+Cancellation stops only that wait and preserves the run/result handle for a
+later status or wait call. It does not interrupt the native run. Existing Go
+`Wait(request)` remains available without cancellation.
+
 Run the repository gates with:
 
 ```sh
