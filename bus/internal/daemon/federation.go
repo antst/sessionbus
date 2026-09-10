@@ -127,15 +127,24 @@ func (s *session) deliveryOmit() *entry {
 	return s.identity
 }
 
+func listSelfInfo(caller federation.Caller) *protocol.SessionSelfInfo {
+	return &protocol.SessionSelfInfo{SessionID: caller.SessionID, Name: caller.Name,
+		Product: caller.Product, Groups: append([]string{}, caller.Groups...)}
+}
+
 func (s *session) forward(frame protocol.Frame, targetID string) {
 	reply := make(chan federation.Reply, 1)
-	call := federation.OutgoingCall{Value: federation.Forward{From: s.federationCaller(),
+	caller := s.federationCaller()
+	call := federation.OutgoingCall{Value: federation.Forward{From: caller,
 		Request: federation.PublicRequest{Method: frame.Method, Params: append(json.RawMessage(nil), frame.Params...)}}, Reply: reply}
 	if code := s.daemon.directory.postCallerForward(s, call, targetID); code != 0 {
 		s.error(frame, code, nil)
 		return
 	}
 	s.requests[frame.ID] = &requestState{frame: frame, targetID: targetID}
+	if frame.Method == "session.list" {
+		s.requests[frame.ID].selfInfo = listSelfInfo(caller)
+	}
 	s.awaitRemote(frame.ID, 0, frame.Method, reply, s.identity.done)
 }
 
@@ -229,6 +238,7 @@ func (s *session) collectFederatedList(caller federation.Caller, local federatio
 		return value
 	}
 	result := value.value.(*protocol.SessionListResult)
+	result.SelfInfo = listSelfInfo(caller)
 	for _, reply := range replies {
 		var remote federation.Reply
 		select {

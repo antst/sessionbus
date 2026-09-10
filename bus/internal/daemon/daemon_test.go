@@ -97,8 +97,14 @@ func runOrderedWorker(product string) error {
 	if err = rawCall(fd, reader, 2, "session.list", protocol.SessionListRequest{SessionID: "ordered-native"}, &listed); err != nil || len(listed.Sessions) != 1 {
 		return fmt.Errorf("post-open list before commit: %v (%d rows)", err, len(listed.Sessions))
 	}
+	if listed.SelfInfo == nil || listed.SelfInfo.SessionID != "ordered-native@local" || listed.SelfInfo.Name != "parent/ordered@local" || listed.SelfInfo.Product != product || !slices.Equal(listed.SelfInfo.Groups, listed.Sessions[0].Groups) {
+		return fmt.Errorf("committed lane self identity: %#v", listed.SelfInfo)
+	}
+	if err = rawCall(fd, reader, 3, "session.list", protocol.SessionListRequest{SessionID: "parent"}, &listed); err != nil || len(listed.Sessions) != 1 || listed.Sessions[0].SessionID != "parent@local" || listed.SelfInfo == nil || listed.SelfInfo.SessionID != "ordered-native@local" {
+		return fmt.Errorf("lane list filtered to parent: %#v, %v", listed, err)
+	}
 	var sent protocol.MessageSendResult
-	return rawCall(fd, reader, 3, "message.send", protocol.MessageSendRequest{Target: "parent", Message: "after-commit"}, &sent)
+	return rawCall(fd, reader, 4, "message.send", protocol.MessageSendRequest{Target: "parent", Message: "after-commit"}, &sent)
 }
 
 func runRehelloWorker(product string) error {

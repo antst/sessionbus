@@ -42,10 +42,12 @@
       "additionalProperties": false,
       "required": ["sessions"],
       "properties": {
+        "self_info": {"$ref": "#/$defs/SessionSelfInfo"},
         "sessions": {"type": "array", "items": {"$ref": "#/$defs/SessionSummary"}},
         "hosts": {"type": "array", "items": {"$ref": "#/$defs/HostProducts"}}
       }
     },
+    "SessionSelfInfo": {"$ref": "#/$defs/DeliverySource"},
     "HostProducts": {
       "type": "object",
       "additionalProperties": false,

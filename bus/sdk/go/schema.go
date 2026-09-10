@@ -28,6 +28,7 @@ type (
 	PeerIdentity        = Identity
 	SessionListRequest  = protocol.SessionListRequest
 	SessionListResult   = protocol.SessionListResult
+	SessionSelfInfo     = protocol.SessionSelfInfo
 	MessageSendRequest  = protocol.MessageSendRequest
 	MessageSendResult   = protocol.MessageSendResult
 	LaneDescribeRequest = protocol.LaneDescribeRequest

@@ -149,6 +149,9 @@ func validateClosedFixture(definition string, raw []byte) error {
 	case "SessionSummary":
 		_, err := DecodeResult("session.list", wrap(`{"sessions":[`, raw, `]}`))
 		return err
+	case "SessionSelfInfo":
+		_, err := DecodeResult("session.list", wrap(`{"sessions":[],"self_info":`, raw, `}`))
+		return err
 	case "MessageSendDelivery":
 		_, err := DecodeResult("message.send", wrap(`{"message_id":"m","deliveries":[`, raw, `]}`))
 		return err
@@ -187,7 +190,7 @@ func TestSchemaDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"DeliveryReceipt", "DeliverySource", "ExtraArgument", "HostProducts", "LaneDescribeRequest", "LaneDescribeResult", "LaneSpawnRequest", "LaneSpawnResult", "MessageDeliverRequest", "MessageDeliverResult", "MessageSendDelivery", "MessageSendRequest", "MessageSendResult", "RPCError", "RPCErrorResponse", "SessionCloseRequest", "SessionCloseResult", "SessionHelloRequest", "SessionHelloResult", "SessionListRequest", "SessionListResult", "SessionOpenOptions", "SessionOpenRequest", "SessionOpenResult", "SessionSummary", "SessionSupersededRequest", "SessionSupersededResult", "SpawnFailedData", "TurnInterruptRequest", "TurnInterruptResult", "TurnRunRequest", "TurnRunResult"}
-	want = append(want, "ExecuteRequest", "LanePolicy", "ReadRequest", "RunRef", "RunStatus", "TurnReady", "WaitRequest")
+	want = append(want, "ExecuteRequest", "LanePolicy", "ReadRequest", "RunRef", "RunStatus", "TurnReady", "WaitRequest", "SessionSelfInfo")
 	slicesSort(want)
 	got := make([]string, 0, len(root.Definitions))
 	for name := range root.Definitions {

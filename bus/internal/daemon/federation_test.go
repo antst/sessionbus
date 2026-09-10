@@ -72,15 +72,26 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 	receiver := connectPeer(t, betaSocket, "receiver-id", "receiver", "team")
 	hidden := connectPeer(t, betaSocket, "hidden-id", "hidden", "other")
 	var listed protocol.SessionListResult
+	checkSelf := func() {
+		t.Helper()
+		if listed.SelfInfo == nil || listed.SelfInfo.SessionID != "sender@alpha" || listed.SelfInfo.Name != "sender@alpha" || listed.SelfInfo.Product != "fixture-client" || !slices.Contains(listed.SelfInfo.Groups, "team") {
+			t.Fatalf("originating caller = %#v", listed.SelfInfo)
+		}
+	}
 	must(t, sender.call("session.list", protocol.SessionListRequest{}, &listed))
+	checkSelf()
 	if len(listed.Sessions) != 2 || listed.Sessions[0].SessionID != "receiver-id@beta" || listed.Sessions[1].SessionID != "sender@alpha" || len(listed.Hosts) != 2 {
 		t.Fatalf("aggregate list = %#v", listed)
 	}
 	listed = protocol.SessionListResult{}
 	must(t, sender.call("session.list", protocol.SessionListRequest{Host: "beta"}, &listed))
+	checkSelf()
 	if len(listed.Sessions) != 1 || listed.Sessions[0].SessionID != "receiver-id@beta" {
 		t.Fatalf("direct host list = %#v", listed)
 	}
+	listed = protocol.SessionListResult{}
+	must(t, sender.call("session.list", protocol.SessionListRequest{SessionID: "receiver-id@beta"}, &listed))
+	checkSelf()
 	var sent protocol.MessageSendResult
 	must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "receiver@beta", Message: "hello"}, &sent))
 	if len(sent.Deliveries) != 1 || sent.Deliveries[0].Disposition != "injected" {
