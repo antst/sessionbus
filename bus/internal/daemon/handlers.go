@@ -17,6 +17,7 @@ type requestState struct {
 	deliveries []protocol.MessageSendDelivery
 	messageID  string
 	aggregate  bool
+	selfInfo   *protocol.SessionSelfInfo
 }
 
 func (s *session) handleRequest(frame protocol.Frame, params any) {
@@ -122,7 +123,7 @@ func (s *session) list(frame protocol.Frame, input *protocol.SessionListRequest)
 		s.error(frame, code, nil)
 		return
 	}
-	result := protocol.SessionListResult{Sessions: make([]protocol.SessionSummary, len(items))}
+	result := protocol.SessionListResult{SelfInfo: listSelfInfo(caller), Sessions: make([]protocol.SessionSummary, len(items))}
 	for index := range items {
 		result.Sessions[index] = items[index].summary
 	}
@@ -366,6 +367,13 @@ func (s *session) consumeReply(event replyEvent) {
 
 func (s *session) finishRequest(id int64, state *requestState, result answer) {
 	delete(s.requests, id)
+	if result.code == 0 && state.selfInfo != nil {
+		// A directed remote list must identify our captured caller, even when
+		// an older destination omits self_info or reports a different identity.
+		listed := result.value.(*protocol.SessionListResult)
+		listed.SelfInfo = state.selfInfo
+		result.remote = nil
+	}
 	if result.code != 0 {
 		if result.remote != nil {
 			s.remoteResponse(state.frame, *result.remote)

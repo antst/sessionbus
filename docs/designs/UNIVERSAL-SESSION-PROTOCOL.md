@@ -198,6 +198,21 @@ the local optional non-empty product list is configured, the daemon's effective
 local host identity is present; an empty list is treated as absent. Federated
 hosts contribute their published lists.
 Advertisement never gates launch: the service PATH remains authoritative.
+
+Every successful list also returns `self_info`: the originating caller's canonical
+`session_id`, optional canonical `name`, `product`, and `groups`, captured when the
+request is admitted. It is independent of the selected rows: a host or session
+filter can exclude the caller without removing `self_info`. Federated lists keep
+the originating caller, including directed queries to another host. This is the
+same public identity used for message sources; credentials and owner tokens are
+never included. Use `self_info.session_id` to recognize self, not a name or list
+position. An unfiltered list includes the connected caller.
+
+Updated SDKs accept an absent `self_info` from older daemons; that means identity
+is unavailable in this response and must not be guessed. Previous SDKs reject
+unknown response fields, so upgrade clients before deploying a daemon that emits
+`self_info`.
+
 Lane-row identity is immutable. Peers have no durable rows and follow the
 re-hello and connection-supersession rules above. A session outside the caller's visibility is indistinguishable
 from a missing session and yields `unknown_session`. Federation forwards

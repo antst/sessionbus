@@ -1,6 +1,24 @@
 {
   "operations": [
     {
+      "action": "list",
+      "method": "session.list",
+      "request": {
+        "host": "beta"
+      },
+      "result": {
+        "sessions": [],
+        "self_info": {
+          "session_id": "self@alpha",
+          "name": "Self@alpha",
+          "product": "native-product",
+          "groups": [
+            "team"
+          ]
+        }
+      }
+    },
+    {
       "action": "start",
       "method": "turn.start",
       "request": {

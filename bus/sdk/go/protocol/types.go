@@ -58,9 +58,9 @@ type HelloDescription struct {
 }
 
 type WorkerHello struct {
-	Protocol    Integer `json:"protocol"`
-	LaunchToken string  `json:"launch_token"`
-	HelloDescription
+	Protocol         Integer `json:"protocol"`
+	LaunchToken      string  `json:"launch_token"`
+	HelloDescription `tstype:",extends"`
 }
 
 // PeerHello is a complete identity assertion; an empty Name omits the native name.
@@ -188,9 +188,16 @@ type SessionListRequest struct {
 	Host      string `json:"host,omitempty"`
 }
 type SessionListResult struct {
+	// SelfInfo is the originating caller, independent of list filters. Older
+	// daemons may omit it; never infer self from a session name or list order.
+	SelfInfo *SessionSelfInfo `json:"self_info,omitempty"`
 	Sessions []SessionSummary `json:"sessions"`
 	Hosts    []HostProducts   `json:"hosts,omitempty"`
 }
+
+// SessionSelfInfo uses the same public identity fields as a message source.
+// It excludes connection credentials, owner tokens and transport metadata.
+type SessionSelfInfo DeliverySource
 
 type MessageSendRequest struct {
 	Target  string   `json:"target,omitempty"`

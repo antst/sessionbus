@@ -109,6 +109,14 @@ Cancellation stops only that wait and preserves the run/result handle for a
 later status or wait call. It does not interrupt the native run. Existing Go
 `Wait(request)` remains available without cancellation.
 
+List replies include `self_info` with the bound caller's canonical `session_id`,
+optional `name`, `product`, and `groups`, even when filters select other sessions
+or hosts. Compare `self_info.session_id` with row IDs to identify self. Go exposes
+it as `SessionListResult.SelfInfo`; JavaScript preserves the wire `self_info`
+object. Updated SDKs accept omission from older daemons (Go: `nil`), which means
+the response does not identify self. Upgrade clients before the daemon: earlier
+SDKs reject this new response field.
+
 Run the repository gates with:
 
 ```sh

@@ -1,5 +1,14 @@
 {
   "cases": [
+    {"name":"self identity","definition":"SessionSelfInfo","valid":true,"value":{"session_id":"self@alpha","name":"Self@alpha","product":"native-product","groups":["team"]}},
+    {"name":"unnamed self identity","definition":"SessionSelfInfo","valid":true,"value":{"session_id":"self@alpha","product":"native-product","groups":["team"]}},
+    {"name":"list identifies caller outside result rows","definition":"SessionListResult","valid":true,"value":{"sessions":[],"self_info":{"session_id":"self@alpha","name":"Self@alpha","product":"native-product","groups":["team"]}}},
+    {"name":"list rejects null self","definition":"SessionListResult","valid":false,"value":{"sessions":[],"self_info":null}},
+    {"name":"self requires session_id","definition":"SessionSelfInfo","valid":false,"value":{"name":"Self@alpha","product":"native-product","groups":["team"]}},
+    {"name":"self requires product","definition":"SessionSelfInfo","valid":false,"value":{"session_id":"self@alpha","name":"Self@alpha","groups":["team"]}},
+    {"name":"self requires groups","definition":"SessionSelfInfo","valid":false,"value":{"session_id":"self@alpha","name":"Self@alpha","product":"native-product"}},
+    {"name":"self rejects private credentials","definition":"SessionSelfInfo","valid":false,"value":{"session_id":"self@alpha","name":"Self@alpha","product":"native-product","groups":["team"],"owner_lifetime":"secret"}},
+    {"name":"list caller cannot select self","definition":"SessionListRequest","valid":false,"value":{"self_info":{"session_id":"self@alpha","name":"Self@alpha","product":"native-product","groups":["team"]}}},
     {"name":"RunRef valid","definition":"RunRef","valid":true,"value":{"session_id":"native@local","run_id":"g/1"}},
     {"name":"RunRef rejects unknown field","definition":"RunRef","valid":false,"value":{"session_id":"native@local","run_id":"g/1","extra":true}},
     {"name":"ReadRequest valid","definition":"ReadRequest","valid":true,"value":{"session_id":"native@local"}},

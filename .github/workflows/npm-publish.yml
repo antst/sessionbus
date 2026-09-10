@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
       - name: Verify tag
         run: |
           version="$(node -p "require('./bus/package.json').version")"
@@ -43,6 +46,9 @@ jobs:
       - name: Test
         working-directory: bus
         run: npm test
+      - name: Check generated DTOs
+        working-directory: bus
+        run: npm run check:types && npm run test:types
       - name: Publish
         working-directory: bus
         run: npm publish --provenance

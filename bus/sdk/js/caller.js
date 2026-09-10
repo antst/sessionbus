@@ -8,18 +8,78 @@ const ACTION_METHODS = Object.freeze({ list: "session.list", send: "message.send
 // Run references and results belong to the resident worker, not this caller.
 class Caller {
   constructor(connection) { this.connection = connection; }
+  /**
+   * @param {import("./protocol").SessionListRequest} [request]
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").SessionListResult>}
+   */
   list(request = {}, cancel) { return this.connection.call("session.list", request, cancel); }
+  /**
+   * @param {import("./protocol").MessageSendRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").MessageSendResult>}
+   */
   send(request, cancel) { return this.connection.call("message.send", request, cancel); }
+  /**
+   * @param {import("./protocol").LaneDescribeRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").LaneDescribeResult>}
+   */
   describe(request, cancel) { return this.connection.call("lane.describe", request, cancel); }
+  /**
+   * @param {import("./protocol").LaneSpawnRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").LaneSpawnResult>}
+   */
   spawn(request, cancel) { return this.connection.call("lane.spawn", request, cancel); }
+  /**
+   * @param {string} sessionID
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").LaneSpawnResult>}
+   */
   resume(sessionID, cancel) { return this.spawn({ resume_session_id: sessionID }, cancel); }
+  /**
+   * @param {import("./protocol").TurnRunRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").RunStatus>}
+   */
   run(request, cancel) { return this.connection.call("turn.run", request, cancel); }
+  /**
+   * @param {import("./protocol").TurnRunRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").RunRef>}
+   */
   start(request, cancel) { return this.connection.call("turn.start", request, cancel); }
+  /**
+   * @param {import("./protocol").ReadRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").RunStatus>}
+   */
   status(request, cancel) { return this.connection.call("turn.status", request, cancel); }
+  /**
+   * @param {import("./protocol").WaitRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").RunStatus>}
+   */
   wait(request, cancel) { return this.connection.call("turn.wait", request, cancel); }
+  /**
+   * @param {import("./protocol").SessionTarget} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<Record<string, never>>}
+   */
   interrupt(request, cancel) { return this.connection.call("turn.interrupt", request, cancel); }
+  /**
+   * @param {import("./protocol").SessionCloseRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<Record<string, never>>}
+   */
   close(request, cancel) { return this.connection.call("session.close", request, cancel); }
   // Once submitted, acknowledgement settles consumption despite later abort.
+  /**
+   * @param {import("./protocol").RunRef} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<Record<string, never>>}
+   */
   ack(request, cancel) {
     if (cancel?.aborted) return Promise.reject(cancel.reason || new Error("aborted"));
     return this.connection.call("turn.ack", request);
