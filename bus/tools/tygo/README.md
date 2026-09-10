@@ -2,7 +2,9 @@
 
 `go.mod` pins official `github.com/gzuidhof/tygo` v0.2.21 (upstream commit
 `0b55b7f6509c82f14206cc704eb4a230ece9efe4`) independently of the daemon and SDK
-runtime modules. `go.sum` locks its Go dependencies. Run through the scripts in
+runtime modules. The generation command and its tests follow the repository's
+GPL-3.0-only license; the generated SDK declarations retain the Go DTO source's
+MIT license. `go.sum` locks its Go dependencies. Run through the scripts in
 `bus/package.json` to use the correct working directory.
 
 The small Go entry point selects exported type declarations from

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 // Command tygo generates SDK wire DTO declarations from the Go protocol types.
 package main

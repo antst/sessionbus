@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 import type { SessionListResult, SessionSelfInfo, WorkerHello, RPCError } from '@sessionbus/kit/protocol';
 import { Caller } from '@sessionbus/kit/sdk/js/caller.js';
 
