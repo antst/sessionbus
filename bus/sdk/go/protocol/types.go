@@ -58,8 +58,8 @@ type HelloDescription struct {
 }
 
 type WorkerHello struct {
-	Protocol    Integer `json:"protocol"`
-	LaunchToken string  `json:"launch_token"`
+	Protocol         Integer `json:"protocol"`
+	LaunchToken      string  `json:"launch_token"`
 	HelloDescription `tstype:",extends"`
 }
 
