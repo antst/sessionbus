@@ -26,7 +26,7 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 	}
 	for _, role := range []string{"host", "hub"} {
 		t.Run(role, func(t *testing.T) {
-			home := t.TempDir()
+			home := filepath.Join(t.TempDir(), "home with spaces")
 			src := filepath.Join(t.TempDir(), "source with spaces")
 			fake := t.TempDir()
 			write(t, filepath.Join(src, "install"), string(script))
@@ -62,6 +62,26 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 			old := filepath.Join(home, ".local/libexec/sessionbus", role, "current", "keep-prior")
 			write(t, old, "prior-payload")
 			command()
+			unitName, environmentName := "sessionbus.service", "service.env"
+			if role == "hub" {
+				unitName, environmentName = "sessionbus-hub.service", "hub.env"
+			}
+			unitPath := filepath.Join(home, ".config/systemd/user", unitName)
+			unit, err := os.ReadFile(unitPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "EnvironmentFile=-" + filepath.Join(home, ".config/sessionbus", environmentName)
+			if !strings.Contains(string(unit), "\n"+want+"\n") {
+				t.Fatalf("rendered unit does not name the environment file: want %q", want)
+			}
+			if analyzer, err := exec.LookPath("systemd-analyze"); err == nil {
+				// verify may exit zero even when it ignores an invalid directive.
+				out, err := exec.Command(analyzer, "verify", unitPath).CombinedOutput()
+				if err != nil || strings.Contains(string(out), "EnvironmentFile=") {
+					t.Fatalf("systemd unit parsing: %v\n%s", err, out)
+				}
+			}
 			preserved, err := filepath.Glob(filepath.Join(home, ".local/libexec/sessionbus", role, "releases/prior.*/current/keep-prior"))
 			if err != nil || len(preserved) != 1 {
 				t.Fatalf("prior directory lost: %v %v", preserved, err)
