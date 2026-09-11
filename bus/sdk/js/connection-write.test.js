@@ -39,7 +39,7 @@ for (const method of ["session.hello", "session.list"]) test(`actual socket clos
   client.write = (body, callback) => write(body, error => { held = () => callback(error); written.resolve(); });
   connection = new Connection(client, true);
   let settled = false;
-  result = connection.call(method, method === "session.hello" ? { protocol: 1, session_id: "ses_review", product: "opencode", groups: ["review"], info: {} } : {}).then(value => ({ value }), error => ({ error })).then(value => { settled = true; return value; });
+  result = connection.call(method, method === "session.hello" ? { protocol: 1, session_id: "ses_review", product: "example", groups: ["review"], info: {} } : {}).then(value => ({ value }), error => ({ error })).then(value => { settled = true; return value; });
   await Promise.all([received.promise, written.promise]);
   const closed = once(client, "close"); connection.close(new Error("owned shutdown")); await closed; await nextTurn();
   const atClose = settled;
