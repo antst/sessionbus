@@ -17,6 +17,7 @@ const MESSAGES = Object.freeze({
   "-32600": "invalid_frame", "-32602": "invalid_hello", "-32603": "internal", "-32001": "unknown_session", "-32002": "not_connected", "-32003": "busy", "-32004": "not_running", "-32005": "already_connected", "-32007": "unknown_product", "-32008": "unsupported_open_field", "-32009": "spawn_failed", "-32010": "timeout", "-32011": "not_committed", "-32012": "superseded", "-32013": "name_taken", "-32014": "unknown_host", "-32015": "forward_lost",
 });
 const { encode, validate } = require("./schema.js");
+const MAX_WRITES = 256, MAX_WRITE_BYTES = 32 * (1 << 20);
 
 class ProtocolError extends Error {
   constructor(value) { super(value.message); this.code = value.code; this.data = value.data; }
@@ -25,8 +26,15 @@ class ProtocolError extends Error {
 class Connection {
   constructor(stream, client, handler = () => {}) {
     this.stream = stream; this.client = client; this.handler = handler; this.buffer = Buffer.alloc(0); this.pending = new Map(); this.next = 0; this.last = 0; this.controller = new AbortController();
+    this.writes = new Map(); this.writeBytes = 0;
     this.done = new Promise((resolve) => { this.finish = resolve; });
-    stream.on("data", (chunk) => this._data(chunk)); stream.on("error", (error) => this.close(error)); stream.on("close", () => this.close());
+    stream.on("data", (chunk) => this._data(chunk)); stream.on("error", (error) => this.close(error));
+    stream.on("close", () => {
+      this.close();
+      // Some streams omit buffered write callbacks on destruction. Actual
+      // close ends their ownership; destroy() alone is not that boundary.
+      for (const complete of this.writes.values()) complete(this.signal.reason);
+    });
   }
   get signal() { return this.controller.signal; }
   async call(method, params, signal, observed) {
@@ -46,7 +54,20 @@ class Connection {
   }
   _send(frame) {
     if (this.signal.aborted) return Promise.reject(this.signal.reason); const body = `${JSON.stringify(frame)}\n`; if (Buffer.byteLength(body) > 1 << 20) return Promise.reject(new Error("frame too large"));
-    return new Promise((resolve, reject) => { const fail = (error) => { this.close(error); reject(error); }; try { this.stream.write(body, (error) => error ? fail(error) : resolve()); } catch (error) { fail(error); } });
+    const bytes = Buffer.byteLength(body);
+    if (this.writes.size >= MAX_WRITES || this.writeBytes + bytes > MAX_WRITE_BYTES) return Promise.reject(new ProtocolError({ code: -32003, message: "busy" }));
+    let resolve, reject;
+    const writing = new Promise((yes, no) => { resolve = yes; reject = no; });
+    let settled = false;
+    const complete = (error) => {
+      if (settled) return;
+      settled = true;
+      this.writes.delete(writing); this.writeBytes -= bytes;
+      if (error) { this.close(error); reject(error); } else resolve();
+    };
+    this.writeBytes += bytes; this.writes.set(writing, complete);
+    try { this.stream.write(body, complete); } catch (error) { complete(error); }
+    return writing;
   }
   _data(chunk) {
     this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
