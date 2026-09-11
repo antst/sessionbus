@@ -70,3 +70,5 @@ either write limit rejects with `busy` before writing and leaves earlier writes
 and the connection intact. Callback, synchronous write failure, or actual close
 releases each reservation once. These limits bound owned encoded payload, not
 JavaScript object overhead or process RSS; there is no preallocated buffer pool.
+For result/error replies, the owning peer or worker can still retire the connection
+under its existing failed-reply-write policy when admission rejects with `busy`.
