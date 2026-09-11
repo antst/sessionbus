@@ -81,7 +81,7 @@ After=network-online.target
 [Service]
 Type=simple
 Environment="PATH=$prefix/bin:/usr/local/bin:/usr/bin:/bin"
-EnvironmentFile=-"$config/service.env"
+EnvironmentFile=-$config/service.env
 RuntimeDirectory=sessionbus
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
@@ -100,7 +100,7 @@ After=network-online.target
 Type=simple
 Environment=SESSIONBUS_HUB_LISTEN=:7419
 Environment="SESSIONBUS_HUB_CONFIG=$config/hub.json"
-EnvironmentFile=-"$config/hub.env"
+EnvironmentFile=-$config/hub.env
 ExecStart="$root/current/bin/sessionbus-hub"
 Restart=on-failure
 RestartSec=2
