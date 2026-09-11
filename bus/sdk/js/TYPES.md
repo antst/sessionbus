@@ -59,6 +59,9 @@ reports a successful write. Calling `destroy()` or logically closing the connect
 is not proof that the stream has closed. A supplied stream must complete callbacks
 or emit `close` for outstanding writes to settle. Late callbacks after settlement,
 including errors after a successful callback, have no effect.
+`Connection.done` marks logical connection closure and can resolve before write
+settlement; consumers joining transport work must also await actual stream close
+and their owned operations.
 
 The existing 1 MiB encoded frame limit is unchanged. Independently of the 256
 pending RPC correlations, a connection allows at most 256 outstanding writes and
