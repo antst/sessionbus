@@ -50,3 +50,25 @@ npm run test:types --prefix bus
 Generation uses a pinned build-only Go tool module; package consumers do not need
 Go, Tygo or a new runtime dependency. The test command downloads a pinned
 TypeScript compiler for an isolated, temporary installed-package type check.
+
+### JavaScript stream write ownership
+
+`Connection` retains submitted writes until their callback or the stream's actual
+`close` event. Actual close rejects writes whose callbacks were omitted; it never
+reports a successful write. Calling `destroy()` or logically closing the connection
+is not proof that the stream has closed. A supplied stream must complete callbacks
+or emit `close` for outstanding writes to settle. Late callbacks after settlement,
+including errors after a successful callback, have no effect.
+`Connection.done` marks logical connection closure and can resolve before write
+settlement; consumers joining transport work must also await actual stream close
+and their owned operations.
+
+The existing 1 MiB encoded frame limit is unchanged. Independently of the 256
+pending RPC correlations, a connection allows at most 256 outstanding writes and
+32 MiB of their encoded bytes, including result/error responses. Admission beyond
+either write limit rejects with `busy` before writing and leaves earlier writes
+and the connection intact. Callback, synchronous write failure, or actual close
+releases each reservation once. These limits bound owned encoded payload, not
+JavaScript object overhead or process RSS; there is no preallocated buffer pool.
+For result/error replies, the owning peer or worker can still retire the connection
+under its existing failed-reply-write policy when admission rejects with `busy`.
