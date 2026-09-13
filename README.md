@@ -89,6 +89,36 @@ Use `sessionbus --help`, `sessionbus help roster`, `sessionbus help secret`,
 `sessionbus-hub --help`, or `sessionbus-hub add-host --help` for the actual CLI
 commands and flags. These help commands do not start services or alter keys.
 
+### Configure advertised products
+
+Edit `${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env`. New host
+installations include all nine integration commands:
+
+```sh
+SESSIONBUS_PRODUCTS=claude-peer,codex-peer,grok-peer,kilo-peer,omp-peer,opencode-peer,pi-peer,qwen-peer,dashi
+```
+
+Keep the commands you intend to offer on this host. Install the corresponding
+products separately and make them available on the daemon service's `PATH`.
+`dashi` is the DSH integration's product command; its launch token selects the
+`sessionbus` lane profile. Plain `dsh` is not a substitute for that launcher.
+
+Restart with `systemctl --user restart sessionbus` on Linux, or
+`launchctl kickstart -k gui/$(id -u)/net.antst.sessionbus` on macOS.
+Reinstallation preserves an existing `service.env` unchanged, so existing
+installations must add this setting explicitly. Environment support requires
+this updated daemon; v0.5.2 only accepts the `-products` flag.
+
+For a foreground daemon, use `sessionbus -products codex-peer,claude-peer`.
+The flag overrides `SESSIONBUS_PRODUCTS`; `-products ''` or an empty environment
+value advertises no configured products. Use comma-separated executable names
+without spaces. The daemon rejects invalid or duplicate names.
+
+This list is discovery metadata, not a launch allowlist or an installation
+check. It does not grant peer visibility: ordinary session lists remain
+restricted by groups. Lane requests resolve the requested executable on the
+service `PATH` even if it is not advertised.
+
 ### Connect hosts to a hub
 
 Host installation generates `~/.config/sessionbus/host.key` once (mode 0600).

@@ -93,7 +93,7 @@ func parseTo(arguments []string, output io.Writer) (daemon.Config, error) {
 	set.StringVar(&configuration.SocketPath, "socket", socket, "unix socket path")
 	set.StringVar(&configuration.TablePath, "table", filepath.Join(root, "sessions.json"), "durable session table")
 	set.StringVar(&configuration.Host, "host", os.Getenv("SESSIONBUS_HOST"), "local host name")
-	set.StringVar(&products, "products", "", "comma-separated advertised products")
+	set.StringVar(&products, "products", os.Getenv("SESSIONBUS_PRODUCTS"), "comma-separated advertised products (default SESSIONBUS_PRODUCTS)")
 	set.StringVar(&configuration.HubAddress, "hub", os.Getenv("SESSIONBUS_HUB"), "federation hub address")
 	set.StringVar(&configuration.HubSecret, "hub-secret", "", "federation host secret")
 	var secretFile string
@@ -160,7 +160,9 @@ or /tmp/sessionbus-<uid>/presence.sock. State: $XDG_STATE_HOME/sessionbus,
 or ~/.local/state/sessionbus. Federation flags default from SESSIONBUS_HOST,
 SESSIONBUS_HUB, and SESSIONBUS_HUB_SECRET_FILE. The installer preserves those
 settings in ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env; the service
-manager loads that file.
+manager loads that file. SESSIONBUS_PRODUCTS supplies the comma-separated
+advertised product list; -products overrides it (an empty value clears it).
+This advertisement does not restrict lane launches or install product binaries.
 Prefer -hub-secret-file over placing a secret in process arguments.
 Hub outages do not stop local service: the daemon retries its connection with
 bounded backoff. Lost remote operations fail without automatic replay.

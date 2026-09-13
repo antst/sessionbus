@@ -62,6 +62,18 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 			old := filepath.Join(home, ".local/libexec/sessionbus", role, "current", "keep-prior")
 			write(t, old, "prior-payload")
 			command()
+			envPath := filepath.Join(home, ".config/sessionbus/service.env")
+			customEnv := "# user configuration\nSESSIONBUS_PRODUCTS=custom-peer,dashi\n"
+			if role == "host" {
+				b, err := os.ReadFile(envPath)
+				want := "SESSIONBUS_PRODUCTS=claude-peer,codex-peer,grok-peer,kilo-peer,omp-peer,opencode-peer,pi-peer,qwen-peer,dashi\n"
+				if err != nil || !strings.Contains(string(b), want) {
+					t.Fatalf("default products: %q, %v", b, err)
+				}
+				if err := os.WriteFile(envPath, []byte(customEnv), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			unitName, environmentName := "sessionbus.service", "service.env"
 			if role == "hub" {
 				unitName, environmentName = "sessionbus-hub.service", "hub.env"
@@ -98,6 +110,12 @@ func TestRealRecipeReinstallPreservesKeysAndOtherRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			command()
+			if role == "host" {
+				b, err := os.ReadFile(envPath)
+				if err != nil || string(b) != customEnv {
+					t.Fatalf("service.env changed on reinstall: %q, %v", b, err)
+				}
+			}
 			b, err = os.ReadFile(key)
 			if err != nil || string(b) != "preserve-existing" {
 				t.Fatal("secret overwritten", err)
