@@ -198,3 +198,28 @@ func TestFederatedOperatorRosterAndLegacyCapability(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicSocketRejectsOperatorRPCBeforeAndAfterHello(t *testing.T) {
+	socket := filepath.Join(testsocket.Directory(t), "presence.sock")
+	d, err := Start(Config{SocketPath: socket, TablePath: filepath.Join(t.TempDir(), "rows")})
+	must(t, err)
+	defer d.Close()
+	for _, hello := range []bool{false, true} {
+		fd, err := net.Dial("unix", socket)
+		must(t, err)
+		must(t, fd.SetDeadline(time.Now().Add(time.Second)))
+		reader := bufio.NewReader(fd)
+		if hello {
+			must(t, rawCall(fd, reader, 1, "session.hello", protocol.PeerHello{Protocol: 1, Product: "fixture", SessionID: "public-test", Groups: []string{}, Info: map[string]any{}}, &struct{}{}))
+		}
+		// Deliberately bypass the SDK schema check to exercise daemon admission.
+		_, err = io.WriteString(fd, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"federation.roster\",\"params\":{}}\n")
+		must(t, err)
+		frame, err := readRawFrame(reader)
+		must(t, err)
+		if frame.Error == nil || len(frame.Result) != 0 {
+			t.Fatalf("public operator RPC succeeded: %#v", frame)
+		}
+		_ = fd.Close()
+	}
+}
