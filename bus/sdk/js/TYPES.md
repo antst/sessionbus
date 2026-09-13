@@ -51,7 +51,7 @@ Generation uses a pinned build-only Go tool module; package consumers do not nee
 Go, Tygo or a new runtime dependency. The test command downloads a pinned
 TypeScript compiler for an isolated, temporary installed-package type check.
 
-### JavaScript stream write ownership
+## JavaScript stream write ownership
 
 `Connection` retains submitted writes until their callback or the stream's actual
 `close` event. Actual close rejects writes whose callbacks were omitted; it never

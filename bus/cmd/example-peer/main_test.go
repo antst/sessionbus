@@ -112,6 +112,22 @@ func TestRunDeliveryInterruptAndCall(t *testing.T) {
 	}
 }
 
+func TestRunCleansUpAfterEarlyDeliveryReceiptFailure(t *testing.T) {
+	product := &example{}
+	run := &sdk.Run{}
+	seed := sdk.RunInput{Delivery: &sdk.DeliveryRequest{MessageID: "seed", Body: "input"}}
+	if _, err := product.Run(context.Background(), run, seed); err == nil || err.Error() != "run has no delivery seed" {
+		t.Fatalf("receipt failure = %v", err)
+	}
+	if run.Native != nil {
+		t.Fatalf("failed run retained native state %#v", run.Native)
+	}
+	receipt, err := product.Deliver(context.Background(), sdk.DeliveryRequest{MessageID: "later", Body: "queued"}, nil)
+	if err != nil || receipt.Disposition != "queued_for_next_turn" {
+		t.Fatalf("delivery after failed run = %#v, %v", receipt, err)
+	}
+}
+
 func TestInstalledReferenceWorker(t *testing.T) {
 	directory := t.TempDir()
 	socketDirectory := testsocket.Directory(t)

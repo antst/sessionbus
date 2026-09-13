@@ -451,7 +451,7 @@ remains unresponsive, the caller closes the session.
 Either a caller sends `session.close` to the daemon or the daemon sends it to
 the addressed lane. The request has optional `forget`, default false. The
 worker asks the product to close and always returns `{}`; a product cleanup
-error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from daemon close admission, bounds the entire close path. A result before the bound makes the
+error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from when the daemon sends `session.close` to the Worker, bounds the entire close path. A result before the bound makes the
 daemon close the socket, send TERM, and reap; expiry makes it close the socket,
 send KILL, and reap with no second waiting period. The spawn/open transaction
 bound and `closeBound` remain the two operation bounds; the independent
