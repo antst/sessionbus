@@ -13,6 +13,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/antst/sessionbus/bus/internal/conn"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
@@ -213,9 +214,14 @@ func (s *hubState) handle(ctx context.Context, inbox chan<- registryEvent, event
 	}
 }
 
+const hubHandshakeTimeout = 5 * time.Second
+
 func authenticate(ctx context.Context, raw net.Conn, configuration *tls.Config, registry chan<- registryEvent, log io.Writer) {
 	fd := tls.Server(raw, configuration)
-	if err := fd.HandshakeContext(ctx); err != nil {
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, hubHandshakeTimeout)
+	err := fd.HandshakeContext(handshakeCtx)
+	cancelHandshake()
+	if err != nil {
 		fmt.Fprintln(log, err)
 		_ = raw.Close()
 		postRegistry(ctx, registry, registryEvent{kind: registryRetire, fd: raw})

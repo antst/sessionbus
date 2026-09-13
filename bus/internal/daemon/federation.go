@@ -7,10 +7,13 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/antst/sessionbus/bus/internal/conn"
 	"github.com/antst/sessionbus/bus/internal/federation"
@@ -21,17 +24,23 @@ type federationLink struct {
 	roster bool
 	inbox  chan any
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Writer) error {
+	_, err := d.startFederation(ctx, fd, stderr)
+	return err
+}
+
+func (d *Daemon) startFederation(ctx context.Context, fd net.Conn, stderr io.Writer) (*federationLink, error) {
 	linkCtx, cancel := context.WithCancel(ctx)
-	link := &federationLink{inbox: make(chan any, conn.OutboxSize), cancel: cancel, roster: federation.SupportsRoster(fd)}
+	link := &federationLink{inbox: make(chan any, conn.OutboxSize), cancel: cancel, roster: federation.SupportsRoster(fd), done: make(chan struct{})}
 	d.directory.mu.Lock()
-	if d.federation != nil || d.directory.closing {
+	if d.federation != nil || d.directory.closing || linkCtx.Err() != nil {
 		d.directory.mu.Unlock()
 		cancel()
 		_ = fd.Close()
-		return errors.New("federation link already connected")
+		return nil, errors.New("federation link already connected or closing")
 	}
 	d.federation = link
 	d.group.Add(1)
@@ -42,6 +51,7 @@ func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Wri
 	}
 	go func() {
 		defer d.group.Done()
+		defer close(link.done)
 		_ = federation.ServeDaemon(linkCtx, d.host, fd, link.inbox, admit, stderr, d.directory.remoteEnded)
 		cancel()
 		d.directory.remoteEnded(federation.LifetimeEvent{})
@@ -52,19 +62,75 @@ func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Wri
 		}
 		d.directory.mu.Unlock()
 	}()
-	return nil
+	return link, nil
 }
 
+const (
+	federationDialTimeout = 5 * time.Second
+	federationRetryMin    = 250 * time.Millisecond
+	federationRetryMax    = 30 * time.Second
+)
+
 func (d *Daemon) connectFederation() error {
+	_, port, err := net.SplitHostPort(d.config.HubAddress)
+	if err != nil {
+		return fmt.Errorf("invalid federation hub address: %w", err)
+	}
+	if _, err = net.LookupPort("tcp", port); err != nil || port == "" {
+		return errors.New("invalid federation hub port")
+	}
 	configuration, err := federation.ClientTLS(d.host, d.config.HubSecret)
 	if err != nil {
 		return err
 	}
-	fd, err := tls.Dial("tcp", d.config.HubAddress, configuration)
-	if err != nil {
-		return err
+	ctx, cancel := context.WithCancel(context.Background())
+	d.directory.mu.Lock()
+	if d.directory.closing || d.federationCancel != nil {
+		d.directory.mu.Unlock()
+		cancel()
+		return errors.New("federation connection owner already started or closing")
 	}
-	return d.StartFederation(context.Background(), fd, io.Discard)
+	d.federationCancel = cancel
+	d.group.Add(1)
+	d.directory.mu.Unlock()
+	go d.reconnectFederation(ctx, configuration)
+	return nil
+}
+
+// Each connection has its own queue and lifetime. Lost operations are settled
+// by StartFederation before another connection is admitted; none are replayed.
+func (d *Daemon) reconnectFederation(ctx context.Context, configuration *tls.Config) {
+	defer d.group.Done()
+	delay := federationRetryMin
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: federationDialTimeout}, Config: configuration}
+	for ctx.Err() == nil {
+		attemptCtx, cancel := context.WithTimeout(ctx, federationDialTimeout)
+		fd, err := dialer.DialContext(attemptCtx, "tcp", d.config.HubAddress)
+		cancel()
+		if err == nil {
+			connected := time.Now()
+			link, linkErr := d.startFederation(ctx, fd, io.Discard)
+			if linkErr == nil {
+				// The link inherits ctx, so shutdown cancels and joins its transport,
+				// handlers and remote ownership before the supervisor returns.
+				<-link.done
+				if time.Since(connected) >= federationRetryMax {
+					delay = federationRetryMin
+				}
+			}
+		}
+		// Jitter avoids synchronized redials after a shared hub outage. Repeated
+		// TLS rejection or short-lived connections retain the increasing delay.
+		pause := delay/2 + time.Duration(rand.Int64N(int64(delay/2)))
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		delay = min(delay*2, federationRetryMax)
+	}
 }
 
 func settleFederationQueue(inbox chan any) {

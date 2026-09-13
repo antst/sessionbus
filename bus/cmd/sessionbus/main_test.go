@@ -67,3 +67,29 @@ func TestSecretCommand(t *testing.T) {
 		t.Fatalf("secret length = %d, error = %v", len(decoded), err)
 	}
 }
+
+func TestProductsEnvironmentAndFlagPrecedence(t *testing.T) {
+	t.Setenv("SESSIONBUS_HUB", "")
+	t.Setenv("SESSIONBUS_PRODUCTS", "one-peer,two-peer")
+	for _, row := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"environment", nil, "one-peer,two-peer"},
+		{"override", []string{"-products", "three-peer"}, "three-peer"},
+		{"clear", []string{"-products", ""}, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c, err := parse(row.args)
+			if err != nil || strings.Join(c.Products, ",") != row.want {
+				t.Fatalf("products = %v, error = %v", c.Products, err)
+			}
+		})
+	}
+	t.Setenv("SESSIONBUS_PRODUCTS", "")
+	c, err := parse(nil)
+	if err != nil || len(c.Products) != 0 {
+		t.Fatalf("empty environment: %v, %v", c.Products, err)
+	}
+}
