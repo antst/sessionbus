@@ -124,10 +124,7 @@ func (d *Daemon) serveOperator(fd net.Conn) {
 	value := d.operatorRoster(ctx, request.Local)
 	close(finished)
 	<-joined
-	body, err := roster.Encode(value)
-	if err != nil {
-		body, _ = json.Marshal(roster.Report{Schema: roster.Schema, Complete: false, Error: err.Error()})
-	}
+	body := encodeOperatorRoster(value)
 	body = append(body, '\n')
 	for len(body) > 0 {
 		n, e := fd.Write(body)
@@ -136,6 +133,32 @@ func (d *Daemon) serveOperator(fd net.Conn) {
 		}
 		body = body[n:]
 	}
+}
+
+// Preserve useful local results when the combined federation exceeds the wire
+// bound. Explicit errors distinguish omitted remote data from an empty roster.
+func encodeOperatorRoster(value roster.Report) []byte {
+	body, err := roster.Encode(value)
+	if err == nil {
+		return body
+	}
+	value.Complete, value.Error = false, "roster_too_large"
+	stubs := make([]roster.Host, 0, len(value.Remote))
+	for _, host := range value.Remote {
+		stubs = append(stubs, roster.Host{Host: host.Host, Products: []string{}, Sessions: []roster.Row{}, Error: "roster_too_large"})
+	}
+	value.Remote = stubs
+	if body, err = roster.Encode(value); err == nil {
+		return body
+	}
+	// Host names themselves may exhaust the remaining budget.
+	value.Remote = []roster.Host{}
+	if body, err = roster.Encode(value); err == nil {
+		return body
+	}
+	// Defensive fallback if even the local projection/configuration is invalid.
+	body, _ = json.Marshal(roster.Report{Schema: roster.Schema, Complete: false, Error: "roster_too_large"})
+	return body
 }
 
 func (d *Daemon) localRoster() roster.Host {

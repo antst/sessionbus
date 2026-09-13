@@ -70,11 +70,11 @@ func TestRosterCommandHumanJSONAndNoRegisteredObserver(t *testing.T) {
 
 func TestRosterHumanEscapesTerminalControls(t *testing.T) {
 	var out bytes.Buffer
-	value := roster.Report{Local: roster.Host{Host: "local", Sessions: []roster.Row{{Name: "bad\x1b[2J\nrow\tcolumn", Groups: []string{"one\rspoof"}}}}}
+	value := roster.Report{Local: roster.Host{Host: "local", Sessions: []roster.Row{{Name: "bad\x1b[2J\nrow\tcolumn\u009b31m\u0085next", Groups: []string{"one\rspoof"}}}}}
 	if err := renderRoster(&out, value); err != nil {
 		t.Fatal(err)
 	}
-	if strings.ContainsAny(out.String(), "\x1b\r") {
+	if strings.ContainsAny(out.String(), "\x1b\r\u009b\u0085") {
 		t.Fatalf("terminal controls escaped rendering: %q", out.String())
 	}
 }

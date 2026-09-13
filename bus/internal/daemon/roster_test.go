@@ -8,10 +8,12 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -175,7 +177,18 @@ func TestFederatedOperatorRosterAndLegacyCapability(t *testing.T) {
 			if len(ordinary.Sessions) != 1 {
 				t.Fatalf("cross-group public leak: %#v", ordinary.Sessions)
 			}
-			result := readRoster(t, a, false)
+			var result roster.Report
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				result = readRoster(t, a, false)
+				if len(result.Remote) == 1 && result.Remote[0].Host == "beta" {
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
 			if len(result.Remote) != 1 || result.Remote[0].Host != "beta" {
 				t.Fatalf("roster=%#v", result)
 			}
@@ -308,5 +321,38 @@ func TestDaemonRosterAdmissionRequiresNegotiatedCapability(t *testing.T) {
 				t.Fatalf("negotiated roster=%#v", result)
 			}
 		})
+	}
+}
+
+func TestCombinedRosterOverflowPreservesLocalProjection(t *testing.T) {
+	rows := func(host string, count int) []roster.Row {
+		result := make([]roster.Row, count)
+		for i := range result {
+			result[i] = roster.Row{SessionID: fmt.Sprintf("peer-%d@%s", i, host), Name: strings.Repeat("n", 80), Kind: "peer", Product: "fixture", Groups: []string{strings.Repeat("g", 80)}, Connected: true}
+		}
+		return result
+	}
+	value := roster.Report{Schema: roster.Schema, Federation: "connected", Complete: true, Local: roster.Host{Host: "local", Products: []string{}, Sessions: rows("local", 1300)}, Remote: []roster.Host{{Host: "beta", Products: []string{}, Sessions: rows("beta", 2500)}}}
+	local, err := roster.Encode(value.Local)
+	must(t, err)
+	if len(local) >= roster.MaxBytes/2 {
+		t.Fatal("local fixture exceeded its own bound")
+	}
+	_, err = roster.Encode(roster.Remote{Hosts: value.Remote})
+	must(t, err)
+	if _, err = roster.Encode(value); err == nil {
+		t.Fatal("fixture did not exceed combined bound")
+	}
+	body := encodeOperatorRoster(value)
+	if len(body) > roster.MaxBytes {
+		t.Fatal("fallback exceeded wire bound")
+	}
+	var actual roster.Report
+	must(t, json.Unmarshal(body, &actual))
+	if actual.Complete || actual.Error != "roster_too_large" || !reflect.DeepEqual(actual.Local, value.Local) || actual.Federation != "connected" {
+		t.Fatalf("lost local projection or incomplete authority: complete=%v error=%s", actual.Complete, actual.Error)
+	}
+	if len(actual.Remote) != 1 || actual.Remote[0].Host != "beta" || actual.Remote[0].Error != "roster_too_large" || len(actual.Remote[0].Sessions) != 0 {
+		t.Fatal("missing explicit remote overflow")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/antst/sessionbus/bus/internal/roster"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
@@ -107,7 +108,7 @@ func renderRoster(output io.Writer, value roster.Report) error {
 
 func safeCell(value string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
+		if unicode.IsControl(r) {
 			return ' '
 		}
 		return r
