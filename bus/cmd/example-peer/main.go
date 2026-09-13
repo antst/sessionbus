@@ -76,12 +76,12 @@ func (p *example) Run(ctx context.Context, run *sdk.Run, seed sdk.RunInput) (res
 		input = seed.Delivery.Body
 	}
 	ctx, active, queued := p.begin(ctx, run)
+	defer func() { result.Result = p.finish(run, active, result.Result) }()
 	if seed.Delivery != nil {
 		if err := run.ReportDelivery(sdk.DeliveryReceipt{Disposition: "injected"}, nil); err != nil {
 			return sdk.TurnResult{}, err
 		}
 	}
-	defer func() { result.Result = p.finish(run, active, result.Result) }()
 	switch {
 	case input == "block":
 		<-ctx.Done()

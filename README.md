@@ -40,10 +40,48 @@ Replace `vX.Y.Z` with an actual [release tag](https://github.com/antst/sessionbu
 Development builds are opt-in: use `SESSIONBUS_VERSION=development sh` in the
 same pipeline. The rolling development prerelease follows tested `develop`
 builds and can change between installations.
-See the [v0.5.0 release notes](docs/releases/v0.5.0.md) for scope and upgrade order.
+See the [v0.5.1 release notes](docs/releases/v0.5.1.md) for scope and upgrade order.
 `SESSIONBUS_DOWNLOAD_ROOT` can select a mirror containing the same archives and
 `SHA256SUMS`. Missing releases or checksum failures stop before installation.
 You can download and inspect the script before executing it.
+
+## See what is running
+
+```sh
+sessionbus roster
+sessionbus roster --json
+sessionbus roster --local
+```
+
+`roster` is the daemon owner's operational view of **all groups**. It includes
+connected peers and retained lanes, product, name, session ID, groups,
+connected/running state, lane owner, persistence, and requested lane permission
+mode. Federated hosts contribute the same live metadata. It does not expose
+messages, results, native arguments, arbitrary peer `info`, credentials, or
+ownership tokens, and it does not register an observer peer.
+
+The operator socket is mode 0600 inside the current user's mode-0700 runtime
+directory. This is same-user diagnostic access; ordinary `session.list` calls
+remain group-restricted. Authenticated federation hosts are trusted to request
+each other's operator metadata. `roster --socket PATH` selects the daemon using
+its **public** socket path; the operator endpoint is derived automatically.
+
+`--json` emits `sessionbus.roster.v1`. Unavailable remote metadata is marked
+explicitly and the command exits nonzero for an incomplete roster; `--local`
+skips federation. Upgrade the hub and hosts to v0.5.1 for complete federated
+rosters. Older links continue working and are never sent unsupported roster
+requests. No native permission mode is inferred for a peer that does not have
+a daemon-owned lane Open record.
+
+For caller-scoped protocol access, the reference caller remains available:
+
+```sh
+sessionbus-call -g YOUR_GROUP session.list '{}'
+```
+
+Use `sessionbus --help`, `sessionbus help roster`, `sessionbus help secret`,
+`sessionbus-hub --help`, or `sessionbus-hub add-host --help` for the actual CLI
+commands and flags. These help commands do not start services or alter keys.
 
 ### Connect hosts to a hub
 

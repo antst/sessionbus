@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/antst/sessionbus/bus/internal/federation"
@@ -50,5 +52,39 @@ func TestHubUsesEnvironmentWhenFlagsAreAbsent(t *testing.T) {
 	t.Setenv("SESSIONBUS_HUB_CONFIG", missing)
 	if err := run(nil); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("environment defaults error = %v", err)
+	}
+}
+
+func TestHubHelpListsCommandsFlagsEnvironmentAndExamples(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("SESSIONBUS_HUB_CONFIG", "")
+	for _, test := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"long help", []string{"--help"}, []string{"sessionbus-hub add-host", "--listen ADDRESS", "SESSIONBUS_HUB_LISTEN", "${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/hub.json", "Examples:"}},
+		{"help command", []string{"help"}, []string{"Commands:", "add-host", "SESSIONBUS_HUB_CONFIG"}},
+		{"add-host help", []string{"add-host", "--help"}, []string{"--secret-file FILE", "XDG_CONFIG_HOME", "offline map"}},
+		{"help add-host", []string{"help", "add-host"}, []string{"sessionbus-hub add-host", "Restart sessionbus-hub"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := runWithIO(test.args, &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q", stderr.String())
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("help lacks %q:\n%s", want, stdout.String())
+				}
+			}
+		})
+	}
+	if entries, err := os.ReadDir(os.Getenv("HOME")); err != nil || len(entries) != 0 {
+		t.Fatalf("help touched config: %#v, %v", entries, err)
 	}
 }

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +30,25 @@ func run(arguments []string) error {
 }
 
 func runTo(arguments []string, stdout io.Writer) error {
+	if len(arguments) > 0 && arguments[0] == "help" {
+		switch {
+		case len(arguments) == 1:
+			arguments = []string{"--help"}
+		case len(arguments) == 2 && arguments[1] == "roster":
+			arguments = []string{"roster", "--help"}
+		case len(arguments) == 2 && arguments[1] == "secret":
+			arguments = []string{"secret", "--help"}
+		default:
+			return errors.New("usage: sessionbus help [roster|secret]")
+		}
+	}
+	if len(arguments) == 2 && arguments[0] == "secret" && (arguments[1] == "--help" || arguments[1] == "-h") {
+		_, err := fmt.Fprintln(stdout, "Usage: sessionbus secret\n\nGenerate a fresh base64 federation join secret on stdout. This command does not\ninstall or rotate any key. Keep the output private; host installation normally\ngenerates and preserves ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/host.key.")
+		return err
+	}
+	if len(arguments) > 0 && arguments[0] == "roster" {
+		return runRoster(arguments[1:], stdout)
+	}
 	if len(arguments) == 1 && arguments[0] == "secret" {
 		secret, err := federation.NewSecret()
 		if err == nil {
@@ -36,8 +56,11 @@ func runTo(arguments []string, stdout io.Writer) error {
 		}
 		return err
 	}
-	configuration, err := parse(arguments)
+	configuration, err := parseTo(arguments, stdout)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	service, err := daemon.Start(configuration)
@@ -54,13 +77,17 @@ func runTo(arguments []string, stdout io.Writer) error {
 	return service.Close()
 }
 
-func parse(arguments []string) (daemon.Config, error) {
+func parse(arguments []string) (daemon.Config, error) { return parseTo(arguments, os.Stderr) }
+
+func parseTo(arguments []string, output io.Writer) (daemon.Config, error) {
 	root, err := stateRoot()
 	if err != nil {
 		return daemon.Config{}, err
 	}
 	socket := sessionkit.Socket()
 	set := flag.NewFlagSet("sessionbus", flag.ContinueOnError)
+	set.SetOutput(output)
+	set.Usage = func() { fmt.Fprint(output, daemonHelp); set.PrintDefaults() }
 	configuration := daemon.Config{}
 	products := ""
 	set.StringVar(&configuration.SocketPath, "socket", socket, "unix socket path")
@@ -107,3 +134,33 @@ func stateRoot() (string, error) {
 	}
 	return filepath.Abs(filepath.Join(home, ".local", "state", "sessionbus"))
 }
+
+const daemonHelp = `Sessionbus — local and federated session router
+
+Usage:
+  sessionbus [daemon flags]           Run the daemon in the foreground
+  sessionbus roster [--json] [--local]  Inspect all same-user peers and lanes
+  sessionbus secret                  Generate a private federation join secret
+  sessionbus help [roster|secret]     Show command help
+
+Examples:
+  sessionbus roster
+  sessionbus roster --json
+  sessionbus roster --local --socket /path/to/presence.sock
+
+The binary has no implicit install, start, or restart subcommand. Installed
+services are managed by systemd --user (Linux) or launchd (macOS):
+  systemctl --user status sessionbus
+  systemctl --user restart sessionbus
+  launchctl kickstart -k gui/$(id -u)/net.antst.sessionbus
+
+Socket discovery: SESSIONBUS_SOCKET, then $XDG_RUNTIME_DIR/sessionbus/presence.sock,
+or /tmp/sessionbus-<uid>/presence.sock. State: $XDG_STATE_HOME/sessionbus,
+or ~/.local/state/sessionbus. Federation flags default from SESSIONBUS_HOST,
+SESSIONBUS_HUB, and SESSIONBUS_HUB_SECRET_FILE. The installer preserves those
+settings in ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env; the service
+manager loads that file.
+Prefer -hub-secret-file over placing a secret in process arguments.
+
+Daemon flags:
+`
