@@ -64,7 +64,7 @@ func TestHubHelpListsCommandsFlagsEnvironmentAndExamples(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"long help", []string{"--help"}, []string{"sessionbus-hub add-host", "--listen ADDRESS", "SESSIONBUS_HUB_LISTEN", "Examples:"}},
+		{"long help", []string{"--help"}, []string{"sessionbus-hub add-host", "--listen ADDRESS", "SESSIONBUS_HUB_LISTEN", "${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/hub.json", "Examples:"}},
 		{"help command", []string{"help"}, []string{"Commands:", "add-host", "SESSIONBUS_HUB_CONFIG"}},
 		{"add-host help", []string{"add-host", "--help"}, []string{"--secret-file FILE", "XDG_CONFIG_HOME", "offline map"}},
 		{"help add-host", []string{"help", "add-host"}, []string{"sessionbus-hub add-host", "Restart sessionbus-hub"}},

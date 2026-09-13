@@ -92,11 +92,12 @@ Server options:
   --listen ADDRESS  TCP address to listen on (or SESSIONBUS_HUB_LISTEN).
   --config FILE     Mode-0600 host secret map (or SESSIONBUS_HUB_CONFIG).
 
-The server requires both values. The installed service defaults to :7419 and
-~/.config/sessionbus/hub.json; direct invocations use only flags or environment.
+The server requires both values. The installer defaults to :7419 and
+${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/hub.json; direct invocations use only
+flags or environment.
 
 Examples:
-  sessionbus-hub --listen :7419 --config "$HOME/.config/sessionbus/hub.json"
+  sessionbus-hub --listen :7419 --config "${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/hub.json"
   sessionbus-hub add-host --secret-file /path/to/host.key workstation
 `)
 }

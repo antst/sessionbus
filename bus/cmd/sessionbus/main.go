@@ -43,7 +43,7 @@ func runTo(arguments []string, stdout io.Writer) error {
 		}
 	}
 	if len(arguments) == 2 && arguments[0] == "secret" && (arguments[1] == "--help" || arguments[1] == "-h") {
-		_, err := fmt.Fprintln(stdout, "Usage: sessionbus secret\n\nGenerate a fresh base64 federation join secret on stdout. This command does not\ninstall or rotate any key. Keep the output private; host installation normally\ngenerates and preserves ~/.config/sessionbus/host.key automatically.")
+		_, err := fmt.Fprintln(stdout, "Usage: sessionbus secret\n\nGenerate a fresh base64 federation join secret on stdout. This command does not\ninstall or rotate any key. Keep the output private; host installation normally\ngenerates and preserves ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/host.key.")
 		return err
 	}
 	if len(arguments) > 0 && arguments[0] == "roster" {
@@ -158,7 +158,8 @@ Socket discovery: SESSIONBUS_SOCKET, then $XDG_RUNTIME_DIR/sessionbus/presence.s
 or /tmp/sessionbus-<uid>/presence.sock. State: $XDG_STATE_HOME/sessionbus,
 or ~/.local/state/sessionbus. Federation flags default from SESSIONBUS_HOST,
 SESSIONBUS_HUB, and SESSIONBUS_HUB_SECRET_FILE. The installer preserves those
-settings in ~/.config/sessionbus/service.env; the service manager loads that file.
+settings in ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env; the service
+manager loads that file.
 Prefer -hub-secret-file over placing a secret in process arguments.
 
 Daemon flags:

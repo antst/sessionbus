@@ -24,7 +24,7 @@ func TestHelpCommandsDoNotStartDaemonOrReadSecret(t *testing.T) {
 	if err := runTo([]string{"--help"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"roster", "secret", "-socket", "-table", "-host", "-products", "-hub", "-hub-secret-file", "SESSIONBUS_SOCKET", "systemctl", "launchctl"} {
+	for _, want := range []string{"roster", "secret", "-socket", "-table", "-host", "-products", "-hub", "-hub-secret-file", "SESSIONBUS_SOCKET", "${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env", "systemctl", "launchctl"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, out.String())
 		}
