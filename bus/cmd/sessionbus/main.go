@@ -139,13 +139,14 @@ const daemonHelp = `Sessionbus — local and federated session router
 
 Usage:
   sessionbus [daemon flags]           Run the daemon in the foreground
-  sessionbus roster [--json] [--local]  Inspect all same-user peers and lanes
+  sessionbus roster [--all] [--json] [--local]  Inspect online peers and active lanes
   sessionbus secret                  Generate a private federation join secret
   sessionbus help [roster|secret]     Show command help
 
 Examples:
   sessionbus roster
   sessionbus roster --json
+  sessionbus roster --all            Include offline and archived entries
   sessionbus roster --local --socket /path/to/presence.sock
 
 The binary has no implicit install, start, or restart subcommand. Installed

@@ -51,10 +51,15 @@ You can download and inspect the script before executing it.
 sessionbus roster
 sessionbus roster --json
 sessionbus roster --local
+sessionbus roster --all
 ```
 
-`roster` is the daemon owner's operational view of **all groups**. It includes
-connected peers and retained lanes, product, name, session ID, groups,
+`roster` is the daemon owner's operational view of **all groups**. By default it
+shows online peers and lanes, plus any lane with an active Run
+(`connected || running`).
+Use `--all` to include offline and retained/archived entries. This filter applies
+to both table and JSON output, on local and remote hosts. Rows include product,
+name, session ID, groups,
 connected/running state, lane owner, persistence, and requested lane permission
 mode. Federated hosts contribute the same live metadata. It does not expose
 messages, results, native arguments, arbitrary peer `info`, credentials, or
