@@ -28,7 +28,8 @@ configuration, keys, state and the other role are preserved. An earlier real
 to the release symlink. Product peers
 install separately from [sessionbus-peers](https://github.com/antst/sessionbus-peers).
 
-The default is the **development prerelease**, updated by tested builds of merged `develop` pushes.
+The default is GitHub's **latest stable release** (`SESSIONBUS_VERSION=latest`),
+using its `/releases/latest/download/` endpoint. Prereleases are not selected.
 To pin a published version, set the variable on **sh**, not curl:
 
 ```sh
@@ -36,6 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/develop/deploy/ins
 ```
 
 Replace `vX.Y.Z` with an actual [release tag](https://github.com/antst/sessionbus/releases).
+Development builds are opt-in: use `SESSIONBUS_VERSION=development sh` in the
+same pipeline. The rolling development prerelease follows tested `develop`
+builds and can change between installations.
+See the [v0.5.0 release notes](docs/releases/v0.5.0.md) for scope and upgrade order.
 `SESSIONBUS_DOWNLOAD_ROOT` can select a mirror containing the same archives and
 `SHA256SUMS`. Missing releases or checksum failures stop before installation.
 You can download and inspect the script before executing it.
