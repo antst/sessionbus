@@ -5,6 +5,7 @@ package sessionkit
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -18,7 +19,7 @@ func TestCallerWireActions(t *testing.T) {
 		{"send", "message.send", `{"target":"lane","message":"hi"}`, `{"message_id":"m","deliveries":[]}`, MessageSendRequest{Target: "lane", Message: "hi"}},
 		{"spawn", "lane.spawn", `{"name":"child","product":"example-peer","open":{}}`, `{"session_id":"child@local"}`, LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}}},
 		{"describe", "lane.describe", `{"product":"example-peer"}`, `{"product":"example-peer","supported_open_fields":[],"extra_arguments":[]}`, LaneDescribeRequest{Product: "example-peer"}},
-		{"run", "turn.run", `{"session_id":"child@local","input":"hi"}`, `{"outcome":"completed","result":"hi"}`, TurnRunRequest{SessionID: "child@local", Input: "hi"}},
+		{"run", "turn.run", `{"session_id":"child@local","input":"hi"}`, `{"session_id":"child@local","run_id":"g/1","state":"done","result":{"outcome":"completed","result":"hi"}}`, TurnRunRequest{SessionID: "child@local", Input: "hi"}},
 		{"interrupt", "turn.interrupt", `{"session_id":"child@local"}`, `{}`, SessionTarget{SessionID: "child@local"}},
 		{"close", "session.close", `{"session_id":"child@local"}`, `{}`, SessionCloseRequest{SessionID: "child@local"}},
 		{"forget", "session.close", `{"session_id":"child@local"}`, `{}`, SessionCloseRequest{SessionID: "child@local", Forget: true}},
@@ -40,35 +41,44 @@ func TestCallerWireActions(t *testing.T) {
 	}
 }
 
-func TestCallerLocalActions(t *testing.T) {
-	release := make(chan struct{})
-	started := make(chan struct{})
-	caller := newCaller(func(_ context.Context, method string, _ any, result any) error {
-		if method == "turn.run" {
-			close(started)
-			<-release
-			*result.(*TurnResult) = TurnResult{Outcome: "completed", Result: "done"}
-		}
-		return nil
-	})
-	tests := []struct {
-		action, args, want string
-		before             func()
-	}{
-		{"start", `{"session_id":"child@local","input":"hi"}`, `{"turn_id":"t-1"}`, nil},
-		{"status", `{"turn_id":"t-1"}`, `{"turn_id":"t-1","session_id":"child@local","state":"running"}`, func() { <-started }},
-		{"wait", `{"turn_id":"t-1"}`, `{"turn_id":"t-1","session_id":"child@local","state":"done","result":{"outcome":"completed","result":"done"}}`, func() { close(release) }},
+func TestCallerSharedWireFixtures(t *testing.T) {
+	raw, err := os.ReadFile("protocol/caller-sugar.fixtures.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.action, func(t *testing.T) {
-			if test.before != nil {
-				test.before()
+	var fixtures struct {
+		Operations []struct {
+			Action, Method  string
+			Request, Result json.RawMessage
+		}
+	}
+	if err = json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range fixtures.Operations {
+		caller := NewCaller(func(_ context.Context, method string, params any) (json.RawMessage, error) {
+			if method != row.Method {
+				t.Fatalf("method %s want %s", method, row.Method)
 			}
-			got, err := caller.Action(context.Background(), test.action, json.RawMessage(test.args))
-			if err != nil || string(got) != test.want {
-				t.Fatalf("result %s, err %v", got, err)
+			got, _ := json.Marshal(params)
+			var a, b any
+			_ = json.Unmarshal(got, &a)
+			_ = json.Unmarshal(row.Request, &b)
+			if !reflect.DeepEqual(a, b) {
+				t.Fatalf("params %s want %s", got, row.Request)
 			}
+			return row.Result, nil
 		})
+		got, err := caller.Action(context.Background(), row.Action, row.Request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a, b any
+		_ = json.Unmarshal(got, &a)
+		_ = json.Unmarshal(row.Result, &b)
+		if !reflect.DeepEqual(a, b) {
+			t.Fatalf("result %s want %s", got, row.Result)
+		}
 	}
 }
 
@@ -87,7 +97,7 @@ func TestCallerActionRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
-	if !reflect.DeepEqual(Actions, []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget"}) {
+	if !reflect.DeepEqual(Actions, []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}) {
 		t.Fatalf("actions = %v", Actions)
 	}
 }

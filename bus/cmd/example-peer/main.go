@@ -40,6 +40,7 @@ func main() {
 func (*example) Hello(context.Context) (sdk.HelloDescription, error) {
 	return sdk.HelloDescription{
 		Product:             "example-peer",
+		SupportsMessageRun:  true,
 		Version:             "1",
 		SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"},
 		ExtraArguments: []sdk.ExtraArgument{{
@@ -67,8 +68,19 @@ func (*example) Open(_ context.Context, request sdk.OpenRequest) (sdk.OpenResult
 	return sdk.OpenResult{SessionID: id}, nil
 }
 
-func (p *example) Run(ctx context.Context, run *sdk.Run, input string) (result sdk.TurnResult, err error) {
+func (p *example) Run(ctx context.Context, run *sdk.Run, seed sdk.RunInput) (result sdk.TurnResult, err error) {
+	var input string
+	if seed.Text != nil {
+		input = *seed.Text
+	} else {
+		input = seed.Delivery.Body
+	}
 	ctx, active, queued := p.begin(ctx, run)
+	if seed.Delivery != nil {
+		if err := run.ReportDelivery(sdk.DeliveryReceipt{Disposition: "injected"}, nil); err != nil {
+			return sdk.TurnResult{}, err
+		}
+	}
 	defer func() { result.Result = p.finish(run, active, result.Result) }()
 	switch {
 	case input == "block":

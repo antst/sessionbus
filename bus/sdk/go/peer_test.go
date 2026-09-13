@@ -142,18 +142,19 @@ func TestPeerReconnectsButSupersededStops(t *testing.T) {
 	hello := <-requests1
 	mustRPC(t, server1.Result(hello, struct{}{}))
 	await(t, peer.Ready(), "peer ready")
-	started, err := peer.Caller.Start(TurnRunRequest{SessionID: "lane@local", Input: "block"})
-	if err != nil {
-		t.Fatal(err)
+	started := RunRef{SessionID: "lane@local", RunID: "g/1"}
+	starting := make(chan error, 1)
+	go func() {
+		_, callErr := peer.Caller.Start(context.Background(), TurnRunRequest{SessionID: started.SessionID, Input: "block"})
+		starting <- callErr
+	}()
+	request := <-requests1
+	if request.Method != "turn.start" {
+		t.Fatalf("method %s", request.Method)
 	}
-	if request := <-requests1; request.Method != "turn.run" {
-		t.Fatalf("method = %s", request.Method)
-	}
+	mustRPC(t, server1.Result(request, started))
+	mustRPC(t, <-starting)
 	mustRPC(t, server1.Close())
-	status, err := peer.Caller.Wait(WaitRequest{TurnID: started.TurnID})
-	if err != nil || status.State != "unavailable" || status.Reason != unavailableReason {
-		t.Fatalf("EOF status = %#v, %v", status, err)
-	}
 	awaitConnection(t, peer, false)
 	if _, err = peer.Call(context.Background(), "session.list", SessionListRequest{}); !isCode(err, protocol.NotConnected) {
 		t.Fatalf("disconnected call = %v", err)
@@ -241,17 +242,21 @@ func TestPeerReplaceSettlesOldRunAndReconnectsAsNewIdentity(t *testing.T) {
 	hello := <-requests1
 	mustRPC(t, server1.Result(hello, struct{}{}))
 	await(t, peer.Ready(), "peer ready")
-	started, err := peer.Caller.Start(TurnRunRequest{SessionID: "lane@local", Input: "block"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	started := RunRef{SessionID: "lane@local", RunID: "g/1"}
+	starting := make(chan error, 1)
+	go func() {
+		_, callErr := peer.Caller.Start(context.Background(), TurnRunRequest{SessionID: started.SessionID, Input: "block"})
+		starting <- callErr
+	}()
 	run := <-requests1
+	mustRPC(t, server1.Result(run, started))
+	mustRPC(t, <-starting)
 	replaced := make(chan error, 1)
 	next := Identity{Product: "fixture-client", SessionID: "new", Name: "new", Groups: []string{"new"}, Info: map[string]any{}}
 	go func() { replaced <- peer.Replace(context.Background(), next) }()
 	<-paused.entered
-	status, err := peer.Caller.Wait(WaitRequest{TurnID: started.TurnID})
-	if err != nil || status.State != "unavailable" || status.Reason != "-32002 not_connected" {
+	status, err := peer.Caller.Wait(WaitRequest{SessionID: started.SessionID, RunID: started.RunID})
+	if !isCode(err, protocol.NotConnected) || status.State != "" {
 		t.Fatalf("old run = %#v, %v", status, err)
 	}
 	if _, err = peer.Call(context.Background(), "session.list", SessionListRequest{}); !isCode(err, protocol.NotConnected) {
@@ -260,7 +265,6 @@ func TestPeerReplaceSettlesOldRunAndReconnectsAsNewIdentity(t *testing.T) {
 	if err = peer.Rehello(context.Background(), "retitled", map[string]any{"revision": 2}); !isCode(err, protocol.NotConnected) {
 		t.Fatalf("crossed rehello = %v", err)
 	}
-	mustRPC(t, server1.Error(run, protocol.NotConnected, nil))
 	close(paused.release)
 	replacement := <-requests1
 	if _, err = peer.Call(context.Background(), "session.list", SessionListRequest{}); !isCode(err, protocol.NotConnected) {
@@ -494,4 +498,54 @@ func mustRPC(t *testing.T, err error) {
 	if err != nil && !errors.Is(err, rpc.ErrClosed) {
 		t.Fatal(err)
 	}
+}
+
+func TestUnnamedPeerWrittenDeliveryKeepsCapturedIdentity(t *testing.T) {
+	requests, server, client := peerPipe(t)
+	usePeerDialer(t, func(string, string) (net.Conn, error) { return client, nil })
+	entered := make(chan PeerIdentity, 1)
+	frames := make(chan DeliveryRequest, 1)
+	release := make(chan struct{})
+	initial := PeerIdentity{Product: "native-product", SessionID: "old", Groups: []string{"shared"}, Info: map[string]any{}}
+	peer, err := ConnectPeer(initial, func(_ context.Context, identity PeerIdentity, request DeliveryRequest) (DeliveryReceipt, error) {
+		entered <- identity
+		frames <- request
+		<-release
+		return DeliveryReceipt{Disposition: "written"}, nil
+	})
+	mustRPC(t, err)
+	defer peer.Shutdown()
+	hello := <-requests
+	if hello.Params.(*protocol.PeerHello).Name != "" {
+		t.Fatal("unnamed hello acquired a name")
+	}
+	mustRPC(t, server.Result(hello, struct{}{}))
+	await(t, peer.Ready(), "ready")
+	for _, name := range []string{"first title", ""} {
+		changed := make(chan error, 1)
+		go func() { changed <- peer.Rehello(context.Background(), name, map[string]any{}) }()
+		hello = <-requests
+		if got := hello.Params.(*protocol.PeerHello); got.SessionID != "old" || got.Name != name {
+			t.Fatalf("rehello = %#v", got)
+		}
+		mustRPC(t, server.Result(hello, struct{}{}))
+		mustRPC(t, <-changed)
+	}
+	request := DeliveryRequest{MessageID: "captured", From: DeliverySource{SessionID: "source@local", Product: "native-product", Groups: []string{"shared"}}, Body: "complete frame"}
+	var receipt DeliveryReceipt
+	done := async(server, "message.deliver", request, &receipt)
+	captured, frame := <-entered, <-frames
+	changed := make(chan error, 1)
+	go func() {
+		changed <- peer.Replace(context.Background(), PeerIdentity{Product: "native-product", SessionID: "new", Name: "replacement", Groups: []string{"shared"}, Info: map[string]any{}})
+	}()
+	mustRPC(t, server.Result(<-requests, struct{}{}))
+	mustRPC(t, <-changed)
+	close(release)
+	mustRPC(t, <-done)
+	if captured.SessionID != "old" || captured.Name != "" || frame.MessageID != request.MessageID || frame.From.SessionID != request.From.SessionID || frame.From.Name != "" || frame.Body != request.Body || receipt.Disposition != "written" {
+		t.Fatalf("captured delivery: %#v %#v %#v", captured, frame, receipt)
+	}
+	peer.Shutdown()
+	await(t, peer.Closed(), "closed")
 }

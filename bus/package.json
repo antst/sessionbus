@@ -2,9 +2,37 @@
   "name": "@sessionbus/kit",
   "version": "0.1.0-pre.2",
   "license": "MIT",
-  "repository": {"type": "git", "url": "git+https://github.com/antst/sessionbus.git", "directory": "bus"},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/antst/sessionbus.git",
+    "directory": "bus"
+  },
   "main": "sdk/js/index.js",
-  "files": ["sdk/js/index.js", "sdk/js/connection.js", "sdk/js/caller.js", "sdk/js/schema.js", "sdk/js/LICENSE", "sdk/go/protocol/session.schema.json"],
-  "scripts": {"test": "node --test sdk/js/*.test.js"},
-  "publishConfig": {"access": "public", "tag": "pre"}
+  "files": [
+    "sdk/js/index.js",
+    "sdk/js/connection.js",
+    "sdk/js/caller.js",
+    "sdk/js/schema.js",
+    "sdk/js/LICENSE",
+    "sdk/go/protocol/session.schema.json",
+    "sdk/js/protocol.d.ts",
+    "sdk/js/TYPES.md"
+  ],
+  "scripts": {
+    "test": "node --test sdk/js/*.test.js",
+    "generate:types": "cd tools/tygo && GOWORK=off go run .",
+    "check:types": "cd tools/tygo && GOWORK=off go run . -check && GOWORK=off go test ./...",
+    "test:types": "node tools/tygo/check-package-types.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "pre"
+  },
+  "typesVersions": {
+    "*": {
+      "protocol": [
+        "sdk/js/protocol.d.ts"
+      ]
+    }
+  }
 }

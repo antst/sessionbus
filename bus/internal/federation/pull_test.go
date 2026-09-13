@@ -41,7 +41,7 @@ func testHub(t *testing.T) (*Hub, string, map[string]string) {
 	return hub, listener.Addr().String(), secrets
 }
 
-func connectTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error)) *testDaemon {
+func connectTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error), lifetime ...func(LifetimeEvent)) *testDaemon {
 	t.Helper()
 	raw, err := net.Dial("tcp", address)
 	if err != nil {
@@ -59,7 +59,7 @@ func connectTestDaemon(t *testing.T, address, host, secret string, admit func(In
 	value := &testDaemon{inbox: make(chan any, 256), cancel: cancel, done: make(chan error, 1), closed: make(chan struct{})}
 	go func() {
 		defer close(value.closed)
-		value.done <- ServeDaemon(ctx, host, fd, value.inbox, admit, io.Discard)
+		value.done <- ServeDaemon(ctx, host, fd, value.inbox, admit, io.Discard, lifetime...)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -146,7 +146,9 @@ func TestPullRosterForwardAndCapturedCaller(t *testing.T) {
 func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 	_, address, secrets := testHub(t)
 	release := make(chan struct{})
+	admitted := make(chan struct{})
 	beta := connectTestDaemon(t, address, "beta", secrets["beta"], func(IncomingCall) (Wait, error) {
+		admitted <- struct{}{}
 		return func(done <-chan struct{}) (Reply, bool) {
 			select {
 			case <-release:
@@ -156,7 +158,13 @@ func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 			}
 		}, nil
 	})
+	// Client TLS completion does not imply hub registration. Complete an
+	// authenticated request on each incumbent before racing a duplicate.
+	_ = callHosts(t, beta)
 	alpha := connectTestDaemon(t, address, "alpha", secrets["alpha"], func(IncomingCall) (Wait, error) { return immediate(Reply{}), nil })
+	if hosts := callHosts(t, alpha); len(hosts) != 1 || hosts[0] != "beta" {
+		t.Fatalf("registered destination roster = %#v", hosts)
+	}
 	duplicate := connectTestDaemon(t, address, "alpha", secrets["alpha"], func(IncomingCall) (Wait, error) { return immediate(Reply{}), nil })
 	select {
 	case <-duplicate.closed:
@@ -172,6 +180,15 @@ func TestDuplicateKeepsIncumbentAndDestinationClosesOn257th(t *testing.T) {
 	for index := range replies {
 		replies[index] = make(chan Reply, 1)
 		alpha.inbox <- OutgoingCall{Value: Forward{From: caller, Request: PublicRequest{Method: "turn.run", Params: params}}, Reply: replies[index]}
+		// Fill the destination pending table, not the independent bounded
+		// origin outbox. The last request must overflow before beta dispatch.
+		if index < 256 {
+			select {
+			case <-admitted:
+			case <-time.After(time.Second):
+				t.Fatal("destination did not admit held call")
+			}
+		}
 	}
 	for index, reply := range replies {
 		select {
@@ -230,7 +247,7 @@ func TestOriginLossDoesNotRetargetReplyAfterReconnect(t *testing.T) {
 			return func(done <-chan struct{}) (Reply, bool) {
 				select {
 				case <-release:
-					raw, _ := protocol.EncodeResult("turn.run", protocol.TurnResult{Outcome: "completed", Result: "done"})
+					raw, _ := protocol.EncodeResult("turn.run", protocol.RunStatus{SessionID: "lane@beta", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}})
 					return Reply{Result: raw}, true
 				case <-done:
 					return Reply{}, false
@@ -271,5 +288,19 @@ func TestOriginLossDoesNotRetargetReplyAfterReconnect(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("replacement inherited the old pending call")
+	}
+}
+
+func TestForwardOptionalNameIsAbsentNeverEmpty(t *testing.T) {
+	for _, name := range []string{"", `,"name":"sender@alpha"`, `,"name":""`, `,"name":null`, `,"name":"@alpha"`, `,"name":"sender@beta"`} {
+		raw := []byte(`{"from":{"session_id":"sender@alpha","product":"peer","private_group":"session:sender@alpha","groups":["session:sender@alpha"]` + name + `},"request":{"method":"session.list","params":{"host":"beta"}}}`)
+		value, host, err := decodeForward(raw, "alpha")
+		valid := name == "" || name == `,"name":"sender@alpha"`
+		if (err == nil) != valid {
+			t.Fatalf("name %s: %v", name, err)
+		}
+		if valid && (host != "beta" || name == "" && value.From.Name != "") {
+			t.Fatalf("forward: %#v, %s", value, host)
+		}
 	}
 }

@@ -16,7 +16,7 @@ const replies = {
   "message.send": { message_id: "message", deliveries: [] },
   "lane.describe": { product: "example-peer", supported_open_fields: [], extra_arguments: [] },
   "lane.spawn": { session_id: "lane@local" },
-  "turn.run": fixtures.shapes.done.terminal,
+  "turn.run": { session_id: "lane@local", run_id: "g/1", state: "done", result: { outcome: "completed", result: "done" } },
   "turn.interrupt": {},
   "session.close": {},
 };
@@ -54,67 +54,29 @@ test("caller maps operations to closed wire requests", async (t) => {
   for (const [action, args, method, params] of actions) { await caller.action(action, args); assert.deepEqual(seen.shift(), [method, params]); }
   await assert.rejects(caller.spawn({ resume_session_id: "lane@local", name: "child" }), (error) => error.message === `LaneSpawnRequest: "name" is not allowed with "resume_session_id"`);
   assert.equal(seen.length, 0);
-  assert.deepEqual(ACTIONS, ["list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget"]);
+  assert.deepEqual(ACTIONS, ["list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"]);
   await assert.rejects(caller.action("unknown", {}), /unknown action/);
   await assert.rejects(caller.action("list", { extra: true }), /SessionListRequest: "extra" is not allowed/);
-  await assert.rejects(caller.action("status", { turn_id: "missing", extra: true }), /invalid status request/);
+  await assert.rejects(caller.action("status", { turn_id: "missing", extra: true }), /ReadRequest:/);
 });
 
-test("caller sugar matches the shared shapes and sequences", async (t) => {
-  const [clientSocket, daemonSocket] = pair();
-  const sequence = fixtures.sequences.target_release_before_collection;
-  const pending = new Map(), timers = [], arrived = new Map([[sequence.first_input, deferred()], [sequence.second_input, deferred()]]);
-  const daemon = new Connection(daemonSocket, false, (request) => { pending.set(request.params.input, request); arrived.get(request.params.input)?.resolve(); });
-  const connection = new Connection(clientSocket, true);
-  const caller = new Caller(connection, { schedule: (call, milliseconds) => { const timer = { call, milliseconds, stopped: false }; timers.push(timer); return () => { timer.stopped = true; }; } });
-  t.after(() => { connection.close(); daemon.close(); });
-
-  const first = await caller.action("start", fixtures.shapes.start.request);
-  assert.deepEqual(first, fixtures.shapes.start.result);
-  await arrived.get(sequence.first_input).promise;
-  await assert.rejects(caller.action("start", fixtures.shapes.start.request), (error) => error instanceof ProtocolError && error.code === -32003);
-  assert.deepEqual(await caller.action("status", { turn_id: first.turn_id }), fixtures.shapes.running.result);
-  assert.throws(() => caller.status({ turn_id: first.turn_id, extra: true }), /invalid status request/);
-  await assert.rejects(caller.wait({ turn_id: first.turn_id, timeout_ms: 1.5 }), /invalid wait request/);
-  const timed = caller.action("wait", { turn_id: first.turn_id, timeout_ms: 25 });
-  await Promise.resolve();
-  assert.equal(timers[0].milliseconds, 25);
-  timers[0].call();
-  assert.deepEqual(await timed, fixtures.shapes.running.result);
-  await daemon.result(pending.get(sequence.first_input), fixtures.shapes.done.terminal);
-  await caller.runs.get(first.turn_id).settled;
-  const second = await caller.action("start", { session_id: sequence.session_id, input: sequence.second_input });
-  assert.deepEqual([first.turn_id, second.turn_id], [sequence.first_turn_id, sequence.second_turn_id]);
-  assert.deepEqual(await caller.action("status", { turn_id: first.turn_id }), fixtures.shapes.done.result);
-  assert.throws(() => caller.status({ turn_id: first.turn_id }), /unknown_turn/);
-  for (const row of fixtures.sequences.invalid_local_requests) {
-    const call = () => caller[row.operation](row.request);
-    if (row.operation === "wait") await assert.rejects(call(), new RegExp(row.error)); else assert.throws(call, new RegExp(row.error));
-  }
-  await arrived.get(sequence.second_input).promise;
-  await daemon.result(pending.get(sequence.second_input), fixtures.shapes.done.terminal);
-  assert.deepEqual(await caller.action("wait", { turn_id: second.turn_id }), { ...fixtures.shapes.done.result, turn_id: second.turn_id });
+test("caller operations use shared wire fixtures", async (t) => {
+ const [client, server] = pair(); let current;
+ const daemon = new Connection(server, false, (request) => { assert.equal(request.method, current.method); assert.deepEqual(request.params, current.request); void daemon.result(request, current.result); });
+ const connection = new Connection(client, true), caller = new Caller(connection);
+ t.after(() => { connection.close(); daemon.close(); });
+ for (const row of fixtures.operations) { current = row; assert.deepEqual(await caller.action(row.action, row.request), row.result); }
 });
 
-test("connection loss removes local runs and reports a resumable lane", async () => {
-  const [clientSocket, daemonSocket] = pair();
-  const connection = new Connection(clientSocket, true);
-  const caller = new Caller(connection);
-  const id = caller.start(fixtures.shapes.start.request).turn_id;
-  const waiting = caller.wait({ turn_id: id });
-  daemonSocket.destroy();
-  assert.deepEqual(await waiting, fixtures.shapes.eof.result);
-  assert.throws(() => caller.status({ turn_id: id }), /unknown_turn/);
-});
-
-test("wire run error becomes an unavailable result", async (t) => {
-  const [clientSocket, daemonSocket] = pair();
-  const daemon = new Connection(daemonSocket, false, (request) => { void daemon.error(request, fixtures.shapes.wire_error.code); });
-  const connection = new Connection(clientSocket, true); const caller = new Caller(connection);
-  t.after(() => { connection.close(); daemon.close(); });
-  const id = caller.start(fixtures.shapes.start.request).turn_id;
-  assert.deepEqual(await caller.wait({ turn_id: id }), fixtures.shapes.wire_error.result);
-  assert.throws(() => caller.status({ turn_id: id }), /unknown_turn/);
+test("submitted ack settles after cancellation; pre-aborted ack sends nothing", async (t) => {
+ const [client, server] = pair(), received = deferred(); let writes = 0;
+ const daemon = new Connection(server, false, (request) => { writes++; received.resolve(request); });
+ const connection = new Connection(client,true), caller = new Caller(connection);
+ t.after(() => { connection.close(); daemon.close(); });
+ const ref = { session_id: "lane@local", run_id: "g/1" }, cancel = new AbortController();
+ const ack = caller.action("ack",ref,cancel.signal), request = await received.promise;
+ cancel.abort(new Error("cancelled")); await daemon.result(request,{}); assert.deepEqual(await ack,{});
+ await assert.rejects(caller.ack(ref,cancel.signal),/cancelled/); assert.equal(writes,1);
 });
 
 test("crossed rehello preserves the fixture's newest identity", async (t) => {
@@ -141,3 +103,4 @@ test("crossed rehello preserves the fixture's newest identity", async (t) => {
   await daemon.result(corrective, {}); await first;
   assert.deepEqual([peer.identity.name, peer.identity.info.nested.value], ["second", "second"]);
 });
+

@@ -3,17 +3,22 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/antst/sessionbus/bus/internal/federation"
+	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestFederatedAdmissionKeepsRunInterruptOrder(t *testing.T) {
@@ -55,27 +60,38 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 	t.Cleanup(hub.Close)
 	start := func(host string) (*Daemon, string) {
 		directory := t.TempDir()
-		socket := filepath.Join(shortTempDir(t), host+".sock")
+		socket := filepath.Join(testsocket.Directory(t), host+".sock")
 		d, startErr := Start(Config{SocketPath: socket, TablePath: filepath.Join(directory, "rows"), Host: host, Products: []string{host + "-product"}, HubAddress: listener.Addr().String(), HubSecret: secrets[host]})
 		must(t, startErr)
 		t.Cleanup(func() { _ = d.Close() })
 		return d, socket
 	}
-	_, alphaSocket := start("alpha")
+	alpha, alphaSocket := start("alpha")
 	_, betaSocket := start("beta")
 	sender := connectPeer(t, alphaSocket, "sender", "sender", "team")
 	receiver := connectPeer(t, betaSocket, "receiver-id", "receiver", "team")
 	hidden := connectPeer(t, betaSocket, "hidden-id", "hidden", "other")
 	var listed protocol.SessionListResult
+	checkSelf := func() {
+		t.Helper()
+		if listed.SelfInfo == nil || listed.SelfInfo.SessionID != "sender@alpha" || listed.SelfInfo.Name != "sender@alpha" || listed.SelfInfo.Product != "fixture-client" || !slices.Contains(listed.SelfInfo.Groups, "team") {
+			t.Fatalf("originating caller = %#v", listed.SelfInfo)
+		}
+	}
 	must(t, sender.call("session.list", protocol.SessionListRequest{}, &listed))
+	checkSelf()
 	if len(listed.Sessions) != 2 || listed.Sessions[0].SessionID != "receiver-id@beta" || listed.Sessions[1].SessionID != "sender@alpha" || len(listed.Hosts) != 2 {
 		t.Fatalf("aggregate list = %#v", listed)
 	}
 	listed = protocol.SessionListResult{}
 	must(t, sender.call("session.list", protocol.SessionListRequest{Host: "beta"}, &listed))
+	checkSelf()
 	if len(listed.Sessions) != 1 || listed.Sessions[0].SessionID != "receiver-id@beta" {
 		t.Fatalf("direct host list = %#v", listed)
 	}
+	listed = protocol.SessionListResult{}
+	must(t, sender.call("session.list", protocol.SessionListRequest{SessionID: "receiver-id@beta"}, &listed))
+	checkSelf()
 	var sent protocol.MessageSendResult
 	must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "receiver@beta", Message: "hello"}, &sent))
 	if len(sent.Deliveries) != 1 || sent.Deliveries[0].Disposition != "injected" {
@@ -122,7 +138,96 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 	if len(listed.Sessions) != 1 || listed.Sessions[0].Name != "sender/child@beta" || !slices.Equal(listed.Sessions[0].Groups, []string{"session:sender@alpha", "session:sender@alpha/child"}) {
 		t.Fatalf("remote child = %#v", listed)
 	}
+	var ref protocol.RunRef
+	must(t, sender.call("turn.start", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "remote answer"}, &ref))
+	var status protocol.RunStatus
+	must(t, sender.call("turn.wait", protocol.WaitRequest{SessionID: ref.SessionID, RunID: ref.RunID}, &status))
+	if ref.SessionID != spawned.SessionID || status.SessionID != ref.SessionID || status.Result == nil || status.Result.Result != "remote answer" {
+		t.Fatalf("remote cursor %#v %#v", ref, status)
+	}
+	pointer := <-sender.deliveries
+	if pointer.From.SessionID != spawned.SessionID || !strings.Contains(pointer.Body, ref.RunID) || strings.Contains(pointer.Body, "remote answer") {
+		t.Fatalf("remote pointer %#v", pointer)
+	}
+	must(t, sender.call("turn.ack", ref, &struct{}{}))
 	must(t, sender.call("session.close", protocol.SessionCloseRequest{SessionID: spawned.SessionID, Forget: true}, &struct{}{}))
+
+	// Remove both native names, then exercise the same authenticated hub path.
+	must(t, sender.peer.Rehello(context.Background(), "", map[string]any{}))
+	must(t, receiver.peer.Rehello(context.Background(), "", map[string]any{}))
+	var rawList map[string]any
+	must(t, sender.call("session.list", protocol.SessionListRequest{}, &rawList))
+	for _, row := range rawList["sessions"].([]any) {
+		if _, present := row.(map[string]any)["name"]; present {
+			t.Fatalf("federated absent name: %#v", row)
+		}
+	}
+	for _, input := range []protocol.MessageSendRequest{{Target: "receiver-id@beta", Message: "unnamed direct"}, {Group: "team", Message: "unnamed group"}} {
+		must(t, sender.call("message.send", input, &sent))
+		if len(sent.Deliveries) != 1 || sent.Deliveries[0].SessionID != "receiver-id@beta" {
+			t.Fatalf("unnamed federation delivery: %#v", sent)
+		}
+		source := (<-receiver.deliveries).From
+		raw, marshalErr := json.Marshal(source)
+		must(t, marshalErr)
+		var fields map[string]any
+		must(t, json.Unmarshal(raw, &fields))
+		if _, present := fields["name"]; present || source.SessionID != "sender@alpha" {
+			t.Fatalf("unnamed federation source: %s", raw)
+		}
+	}
+	must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "receiver@beta", Message: "old name"}, &sent))
+	if sent.Deliveries[0].Reason != "unknown_session" {
+		t.Fatalf("removed remote name matched: %#v", sent)
+	}
+	t.Setenv("SESSIONBUS_SOCKET", betaSocket)
+	captured := make(chan sessionkit.DeliveryRequest, 1)
+	written, connectErr := sessionkit.ConnectPeer(sessionkit.PeerIdentity{Product: "fixture-client", SessionID: "written-id", Groups: []string{"team"}, Info: map[string]any{}}, func(_ context.Context, _ sessionkit.PeerIdentity, request sessionkit.DeliveryRequest) (sessionkit.DeliveryReceipt, error) {
+		captured <- request
+		if request.Body == "uncertain" {
+			return sessionkit.DeliveryReceipt{}, &sessionkit.ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"post-submission transport loss; consumption unknown"`)}
+		}
+		return sessionkit.DeliveryReceipt{Disposition: "written"}, nil
+	})
+	must(t, connectErr)
+	t.Cleanup(func() { written.Shutdown(); <-written.Closed() })
+	<-written.Ready()
+	for _, body := range []string{"written", "uncertain"} {
+		sent = protocol.MessageSendResult{}
+		must(t, sender.call("message.send", protocol.MessageSendRequest{Target: "written-id@beta", Message: body}, &sent))
+		receipt := sent.Deliveries[0]
+		want, reason := "written", ""
+		if body == "uncertain" {
+			want, reason = "rejected", "no_receipt"
+		}
+		if receipt.Disposition != want || receipt.Reason != reason || receipt.SessionID != "written-id@beta" || receipt.DeliveryID == "" {
+			t.Fatalf("federated receipt: %#v", receipt)
+		}
+		request := <-captured
+		if request.From.SessionID != "sender@alpha" || request.From.Name != "" || request.MessageID != sent.MessageID || request.Body != body {
+			t.Fatalf("federated captured frame: %#v", request)
+		}
+	}
+	// Same-ID replacement preserves remote ownership; actual owner loss ends it.
+	zero, yes := int64(0), true
+	spawn := func(owner *peerClient, name string, persistent bool) string {
+		var result protocol.LaneSpawnResult
+		must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Host: "beta", Name: name, Product: "fixture-worker", Open: &protocol.OpenOptions{}, ExtraGroups: []string{"team"}, Persistent: &persistent, AutoCloseMS: &zero}, &result))
+		return result.SessionID
+	}
+	owned, persistent := spawn(sender, "owned", false), spawn(sender, "persistent", yes)
+	replacement := connectPeer(t, alphaSocket, "sender", "replacement", "team")
+	<-sender.superseded
+	remoteConnected(t, receiver, owned, true)
+	replacement.peer.Shutdown()
+	remoteConnected(t, receiver, owned, false)
+	remoteConnected(t, receiver, persistent, true)
+	newOwner := connectPeer(t, alphaSocket, "new-owner", "new-owner", "team")
+	owned, persistent = spawn(newOwner, "host-owned", false), spawn(newOwner, "host-persistent", yes)
+	must(t, alpha.Close())
+	remoteConnected(t, receiver, owned, false)
+	remoteConnected(t, receiver, persistent, true)
+
 }
 
 func TestForwardWaiterKeepsOriginalIdentityLifetime(t *testing.T) {
@@ -196,10 +301,26 @@ func TestRemoteCloseWaitsForRunTerminal(t *testing.T) {
 	if closed.held == nil || s.requests[2] == nil {
 		t.Fatal("remote close completed before run terminal")
 	}
-	runRaw, _ := protocol.EncodeResult("turn.run", protocol.TurnResult{Outcome: "completed", Result: "done"})
+	runRaw, _ := protocol.EncodeResult("turn.run", protocol.RunStatus{SessionID: "lane@beta", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}})
 	runReply := federation.Reply{Result: runRaw}
-	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.TurnResult{Outcome: "completed", Result: "done"}, remote: &runReply}})
+	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.RunStatus{SessionID: "lane@beta", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}}, remote: &runReply}})
 	if len(s.requests) != 0 {
 		t.Fatalf("requests after terminal = %#v", s.requests)
+	}
+}
+
+func remoteConnected(t *testing.T, peer *peerClient, id string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var result protocol.SessionListResult
+		must(t, peer.call("session.list", protocol.SessionListRequest{SessionID: id}, &result))
+		if len(result.Sessions) == 1 && result.Sessions[0].Connected == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %s connected != %t: %#v", id, want, result)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

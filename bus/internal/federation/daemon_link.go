@@ -38,7 +38,7 @@ type pendingCall struct {
 	reply  chan Reply
 }
 
-func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), stderr io.Writer) error {
+func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), stderr io.Writer, lifetime ...func(LifetimeEvent)) error {
 	var group, helpers sync.WaitGroup
 	wire := conn.Start(fd, inbox, &group)
 	nextID, lastIn := int64(0), int64(0)
@@ -57,6 +57,20 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 			stopping, cause = nil, ctx.Err()
 		case raw := <-inbox:
 			switch event := raw.(type) {
+			case OwnerEndCall:
+				if len(pending) >= protocol.MaxOperations {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					wire.Close()
+					continue
+				}
+				nextID++
+				body, err := requestBytes(nextID, ownerEndMethod, event.Value)
+				if cause != nil || err != nil || !wire.Send(body) {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					wire.Close()
+					continue
+				}
+				pending[nextID] = pendingCall{ownerEndMethod, event.Reply}
 			case OutgoingCall:
 				nextID++
 				body, err := requestBytes(nextID, forwardMethod, event.Value)
@@ -91,7 +105,7 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 				}
 			case conn.Frame:
 				if cause == nil {
-					cause = daemonFrame(host, event, pending, wire, inbox, admit, &helpers, &lastIn)
+					cause = daemonFrame(host, event, pending, wire, inbox, admit, &helpers, &lastIn, lifetime)
 					if cause != nil {
 						fmt.Fprintln(stderr, cause)
 						wire.Close()
@@ -108,7 +122,7 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 	}
 }
 
-func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64) error {
+func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64, lifetime []func(LifetimeEvent)) error {
 	frame := event.Value
 	if event.Err != nil {
 		return event.Err
@@ -120,6 +134,34 @@ func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, w
 		}
 		delete(pending, frame.ID)
 		call.reply <- Reply{Result: frame.Result, Error: frame.Error, ErrorRaw: frame.ErrorRaw}
+		return nil
+	}
+	if frame.ID <= *lastIn {
+		return errFrame
+	}
+	if frame.Method == ownerEndMethod || frame.Method == hostEndMethod {
+		*lastIn = frame.ID
+		event := LifetimeEvent{}
+		if frame.Method == ownerEndMethod {
+			var value OwnerEnd
+			if protocol.DecodeJSON(frame.Params, &value) != nil || value.Host != host || !validHost(value.Source) || !ownedPart(value.SessionID, value.Source, false) || value.Lifetime == "" || value.Attachment == "" {
+				return errFrame
+			}
+			event.Owner = &value
+		} else {
+			var value HostEnd
+			if protocol.DecodeJSON(frame.Params, &value) != nil || !validHost(value.Host) || value.Attachment == "" {
+				return errFrame
+			}
+			event.Host = &value
+		}
+		for _, apply := range lifetime {
+			apply(event)
+		}
+		body, _ := ResponseBytes(frame.ID, emptyReply())
+		if !wire.Send(body) {
+			return errFrame
+		}
 		return nil
 	}
 	if frame.Method != forwardMethod || frame.ID <= *lastIn {

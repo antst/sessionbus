@@ -16,6 +16,7 @@ import (
 )
 
 type row struct {
+	Policy    *protocol.LanePolicy `json:"policy,omitempty"`
 	SessionID string               `json:"session_id"`
 	Product   string               `json:"product"`
 	Name      string               `json:"name"`
@@ -49,8 +50,13 @@ func openTable(path string) (*table, []row, error) {
 		var value row
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
-		if readErr != nil || json.Unmarshal(raw, &fields) != nil || len(fields) != 6 || decoder.Decode(&value) != nil || file.Name() != rowFile(value.SessionID) || value.Name == "" || len(value.Groups) < 2 || ids[value.SessionID] || names[value.Name] {
+		if readErr != nil || json.Unmarshal(raw, &fields) != nil || (len(fields) != 6 && len(fields) != 7) || decoder.Decode(&value) != nil || file.Name() != rowFile(value.SessionID) || value.Name == "" || len(value.Groups) < 2 || ids[value.SessionID] || names[value.Name] {
 			return nil, nil, errors.New("invalid durable session table")
+		}
+		if value.Policy != nil {
+			if _, err := protocol.EncodeResult("lane.spawn", protocol.LaneSpawnResult{SessionID: value.SessionID, Policy: value.Policy}); err != nil {
+				return nil, nil, errors.New("invalid durable lane policy")
+			}
 		}
 		ids[value.SessionID], names[value.Name] = true, true
 		rows = append(rows, cloneRow(value))
@@ -110,6 +116,10 @@ func rowFile(id string) string {
 }
 
 func cloneRow(value row) row {
+	if value.Policy != nil {
+		copy := *value.Policy
+		value.Policy = &copy
+	}
 	value.Groups = append([]string(nil), value.Groups...)
 	value.Open.Arguments = append([]string(nil), value.Open.Arguments...)
 	return value

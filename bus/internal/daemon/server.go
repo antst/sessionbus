@@ -9,18 +9,21 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/antst/sessionbus/bus/internal/conn"
 	"github.com/antst/sessionbus/bus/sdk/go/socketpath"
 )
 
 type Config struct {
-	SocketPath string
-	TablePath  string
-	Host       string
-	Products   []string
-	HubAddress string
-	HubSecret  string
+	now         func() time.Time
+	policyTimer func(time.Duration) (<-chan time.Time, func())
+	SocketPath  string
+	TablePath   string
+	Host        string
+	Products    []string
+	HubAddress  string
+	HubSecret   string
 }
 
 type Daemon struct {
@@ -37,6 +40,15 @@ type Daemon struct {
 }
 
 func Start(config Config) (*Daemon, error) {
+	if config.now == nil {
+		config.now = time.Now
+	}
+	if config.policyTimer == nil {
+		config.policyTimer = func(delay time.Duration) (<-chan time.Time, func()) {
+			timer := time.NewTimer(delay)
+			return timer.C, func() { timer.Stop() }
+		}
+	}
 	if config.Host == "" {
 		config.Host = "local"
 	}

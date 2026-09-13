@@ -37,8 +37,9 @@ func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Wri
 	d.directory.mu.Unlock()
 	go func() {
 		defer d.group.Done()
-		_ = federation.ServeDaemon(linkCtx, d.host, fd, link.inbox, d.directory.admitFederation, stderr)
+		_ = federation.ServeDaemon(linkCtx, d.host, fd, link.inbox, d.directory.admitFederation, stderr, d.directory.remoteEnded)
 		cancel()
+		d.directory.remoteEnded(federation.LifetimeEvent{})
 		d.directory.mu.Lock()
 		if d.federation == link {
 			d.federation = nil
@@ -68,6 +69,8 @@ func settleFederationQueue(inbox chan any) {
 			lost := federation.Reply{Error: &protocol.RPCError{Code: protocol.ForwardLost, Message: "forward_lost"}}
 			switch call := value.(type) {
 			case federation.OutgoingCall:
+				call.Reply <- lost
+			case federation.OwnerEndCall:
 				call.Reply <- lost
 			case federation.HostsCall:
 				call.Reply <- lost
@@ -107,7 +110,13 @@ func (s *session) federationCaller() federation.Caller {
 		value.Groups = append([]string(nil), value.Groups...)
 		return value
 	}
-	return federation.Caller{SessionID: s.identity.row.SessionID, Name: s.identity.row.Name,
+	s.daemon.directory.mu.Lock()
+	defer s.daemon.directory.mu.Unlock()
+	token := ""
+	if s.identity.lifetime != nil {
+		token = s.identity.lifetime.token
+	}
+	return federation.Caller{OwnerLifetime: token, SessionID: s.identity.row.SessionID, Name: s.identity.row.Name,
 		Product: s.identity.row.Product, PrivateGroup: privateGroup(s.identity), Groups: append([]string(nil), s.identity.row.Groups...)}
 }
 
@@ -118,15 +127,24 @@ func (s *session) deliveryOmit() *entry {
 	return s.identity
 }
 
+func listSelfInfo(caller federation.Caller) *protocol.SessionSelfInfo {
+	return &protocol.SessionSelfInfo{SessionID: caller.SessionID, Name: caller.Name,
+		Product: caller.Product, Groups: append([]string{}, caller.Groups...)}
+}
+
 func (s *session) forward(frame protocol.Frame, targetID string) {
 	reply := make(chan federation.Reply, 1)
-	call := federation.OutgoingCall{Value: federation.Forward{From: s.federationCaller(),
+	caller := s.federationCaller()
+	call := federation.OutgoingCall{Value: federation.Forward{From: caller,
 		Request: federation.PublicRequest{Method: frame.Method, Params: append(json.RawMessage(nil), frame.Params...)}}, Reply: reply}
-	if code := s.daemon.directory.postFederation(call); code != 0 {
+	if code := s.daemon.directory.postCallerForward(s, call, targetID); code != 0 {
 		s.error(frame, code, nil)
 		return
 	}
 	s.requests[frame.ID] = &requestState{frame: frame, targetID: targetID}
+	if frame.Method == "session.list" {
+		s.requests[frame.ID].selfInfo = listSelfInfo(caller)
+	}
 	s.awaitRemote(frame.ID, 0, frame.Method, reply, s.identity.done)
 }
 
@@ -220,6 +238,7 @@ func (s *session) collectFederatedList(caller federation.Caller, local federatio
 		return value
 	}
 	result := value.value.(*protocol.SessionListResult)
+	result.SelfInfo = listSelfInfo(caller)
 	for _, reply := range replies {
 		var remote federation.Reply
 		select {
@@ -451,4 +470,27 @@ func rpcReply(method string, value answer) federation.Reply {
 		return rpcReply(method, answer{code: protocol.Internal, data: err.Error()})
 	}
 	return federation.Reply{Result: json.RawMessage(raw)}
+}
+
+func (d *directory) postCallerForward(s *session, call federation.OutgoingCall, target string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.daemon.federation == nil {
+		return protocol.UnknownHost
+	}
+	if call.Value.Request.Method == "lane.spawn" && s.caller == nil {
+		owner := s.identity.lifetime
+		if owner == nil || owner.ended || s.identity.attachment != s {
+			return protocol.NotConnected
+		}
+		_, host, _ := canonicalTarget(target, d.daemon.host, validIDPart)
+		owner.destinations[host] = true
+	}
+	select {
+	case d.daemon.federation.inbox <- call:
+		return 0
+	default:
+		d.daemon.federation.cancel()
+		return protocol.ForwardLost
+	}
 }

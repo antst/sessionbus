@@ -267,6 +267,39 @@ func TestHandlersRunInFrameOrderAndWriteCompleteFrames(t *testing.T) {
 	_ = c.Close()
 }
 
+func TestReadStopsBeforeBufferedRequestAfterClose(t *testing.T) {
+	for _, test := range []struct {
+		name, first string
+		seen        func() error
+	}{
+		{"invalid result", `{"jsonrpc":"2.0","id":1,"result":{"extra":true}}`, nil},
+		{"observer failure", `{"jsonrpc":"2.0","id":1,"result":{}}`, func() error { return errors.New("owner rejected acknowledgement") }},
+		{"invalid request", `{"jsonrpc":"2.0","id":1,"method":"session.superseded","params":{"extra":true}}`, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			local, peer := net.Pipe()
+			defer peer.Close()
+			// Drain the correlated error emitted for an invalid inbound request.
+			drained := make(chan struct{})
+			go func() { _, _ = io.Copy(io.Discard, peer); close(drained) }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			buffered := test.first + "\n" + `{"jsonrpc":"2.0","id":2,"method":"session.superseded","params":{}}` + "\n"
+			c := &Conn{
+				fd: local, reader: bufio.NewReader(strings.NewReader(buffered)), client: true,
+				ctx: ctx, cancel: cancel,
+				pending: map[int64]pending{1: {method: "session.hello", result: &struct{}{}, done: make(chan error, 1), seen: test.seen}},
+				handler: func(context.Context, *Request) { t.Error("buffered request dispatched after closure") },
+			}
+			// Run the actual reader synchronously: assertions follow reader exit,
+			// not merely context cancellation, and all frames are already buffered.
+			c.read()
+			check(t, ctx.Err() != nil, "reader did not close the connection")
+			<-drained
+		})
+	}
+}
+
 type pauseWriteConn struct {
 	net.Conn
 	entered chan struct{}

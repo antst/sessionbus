@@ -32,7 +32,13 @@ var methodCodecs = map[string]methodCodec{
 	"lane.describe":      {"LaneDescribeRequest", "LaneDescribeResult", newValue[LaneDescribeRequest], newValue[LaneDescribeResult], true, false},
 	"lane.spawn":         {"LaneSpawnRequest", "LaneSpawnResult", newValue[LaneSpawnRequest], newValue[LaneSpawnResult], true, false},
 	"session.open":       {"SessionOpenRequest", "SessionOpenResult", newValue[OpenRequest], newValue[OpenResult], false, true},
-	"turn.run":           {"TurnRunRequest", "TurnRunResult", newValue[TurnRunRequest], newValue[TurnResult], true, true},
+	"turn.run":           {"TurnRunRequest", "RunStatus", newValue[TurnRunRequest], newValue[RunStatus], true, false},
+	"turn.start":         {"TurnRunRequest", "RunRef", newValue[TurnRunRequest], newValue[RunRef], true, false},
+	"turn.execute":       {"ExecuteRequest", "RunRef", newValue[ExecuteRequest], newValue[RunRef], false, true},
+	"turn.status":        {"ReadRequest", "RunStatus", newValue[ReadRequest], newValue[RunStatus], true, true},
+	"turn.wait":          {"WaitRequest", "RunStatus", newValue[WaitRequest], newValue[RunStatus], true, true},
+	"turn.ack":           {"RunRef", "SessionCloseResult", newValue[RunRef], newValue[struct{}], true, true},
+	"turn.ready":         {"TurnReady", "SessionCloseResult", newValue[TurnReady], newValue[struct{}], true, false},
 	"turn.interrupt":     {"TurnInterruptRequest", "TurnInterruptResult", newValue[SessionTarget], newValue[struct{}], true, true},
 	"session.close":      {"SessionCloseRequest", "SessionCloseResult", newValue[SessionCloseRequest], newValue[struct{}], true, true},
 }
@@ -148,7 +154,7 @@ var errorMessages = map[int]string{InvalidFrame: "invalid_frame", InvalidHello: 
 type schemaNode map[string]any
 
 var schemaDefinitions = loadSchema()
-var schemaKeywords = map[string]bool{"$ref": true, "const": true, "enum": true, "type": true, "required": true, "additionalProperties": true, "minProperties": true, "properties": true, "items": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "exclusiveMinimum": true, "allOf": true, "if": true, "then": true, "else": true, "not": true}
+var schemaKeywords = map[string]bool{"$ref": true, "const": true, "enum": true, "type": true, "required": true, "additionalProperties": true, "minProperties": true, "properties": true, "items": true, "uniqueItems": true, "minLength": true, "maxLength": true, "pattern": true, "minimum": true, "maximum": true, "exclusiveMinimum": true, "allOf": true, "if": true, "then": true, "else": true, "not": true}
 
 func loadSchema() map[string]any {
 	var root map[string]any
@@ -264,6 +270,9 @@ func schemaIssue(rule schemaNode, value any, path, with string) string {
 	if value, ok := value.(float64); ok {
 		if minimum := number(rule, "minimum"); has(rule, "minimum") && value < minimum {
 			return fmt.Sprintf("%s must be at least %g", location(path), minimum)
+		}
+		if maximum := number(rule, "maximum"); has(rule, "maximum") && value > maximum {
+			return fmt.Sprintf("%s must be at most %g", location(path), maximum)
 		}
 		if minimum := number(rule, "exclusiveMinimum"); has(rule, "exclusiveMinimum") && value <= minimum {
 			return fmt.Sprintf("%s must be greater than %g", location(path), minimum)
@@ -396,4 +405,13 @@ func stringsOf(value any) []string {
 		values[i], _ = raw[i].(string)
 	}
 	return values
+}
+
+// ValidateTurnResult validates a native terminal independently of caller methods.
+func ValidateTurnResult(value TurnResult) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return validateDefinition("TurnRunResult", raw)
 }

@@ -26,6 +26,7 @@ function issue(rule, value, path, withName) {
     if (rule.pattern && !new RegExp(rule.pattern, "u").test(value)) return `${location(path)} must match ${JSON.stringify(rule.pattern)}`;
   }
   if (typeof value === "number") {
+    if (rule.maximum < value) return `${location(path)} must be at most ${rule.maximum}`;
     if (rule.minimum > value) return `${location(path)} must be at least ${rule.minimum}`;
     if (rule.exclusiveMinimum >= value) return `${location(path)} must be greater than ${rule.exclusiveMinimum}`;
   }

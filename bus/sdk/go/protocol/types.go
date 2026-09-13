@@ -11,6 +11,7 @@ const (
 	MaxFrameBytes = 1 << 20
 	MaxTextRunes  = 262144
 	MaxRequestID  = 1<<53 - 1
+	MaxOperations = 256
 
 	InvalidFrame     = -32600
 	InvalidHello     = -32602
@@ -49,6 +50,7 @@ func (value *Integer) UnmarshalJSON(raw []byte) error {
 }
 
 type HelloDescription struct {
+	SupportsMessageRun  bool            `json:"supports_message_run,omitempty"`
 	Product             string          `json:"product"`
 	Version             string          `json:"version,omitempty"`
 	SupportedOpenFields []string        `json:"supported_open_fields"`
@@ -56,16 +58,17 @@ type HelloDescription struct {
 }
 
 type WorkerHello struct {
-	Protocol    Integer `json:"protocol"`
-	LaunchToken string  `json:"launch_token"`
-	HelloDescription
+	Protocol         Integer `json:"protocol"`
+	LaunchToken      string  `json:"launch_token"`
+	HelloDescription `tstype:",extends"`
 }
 
+// PeerHello is a complete identity assertion; an empty Name omits the native name.
 type PeerHello struct {
 	Protocol  Integer        `json:"protocol"`
 	Product   string         `json:"product"`
 	SessionID string         `json:"session_id"`
-	Name      string         `json:"name"`
+	Name      string         `json:"name,omitempty"`
 	Groups    []string       `json:"groups"`
 	Info      map[string]any `json:"info"`
 }
@@ -78,7 +81,50 @@ type OpenOptions struct {
 	Arguments       []string `json:"arguments,omitempty"`
 }
 
+type LanePolicy struct {
+	Persistent     bool   `json:"persistent"`
+	AutoCloseMS    int64  `json:"auto_close_ms"`
+	IdleMessage    string `json:"idle_message"`
+	Notify         bool   `json:"notify"`
+	NotifyTarget   string `json:"notify_target,omitempty"`
+	OwnerSessionID string `json:"owner_session_id,omitempty"`
+}
+
+type RunRef struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+}
+type ReadRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
+}
+type WaitRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id,omitempty"`
+	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
+}
+type RunStatus struct {
+	SessionID string      `json:"session_id"`
+	RunID     string      `json:"run_id"`
+	State     string      `json:"state"`
+	Result    *TurnResult `json:"result,omitempty"`
+	Reason    string      `json:"reason,omitempty"`
+}
+type ExecuteRequest struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+	Input     string `json:"input"`
+}
+type TurnReady struct {
+	SessionID string `json:"session_id"`
+	RunID     string `json:"run_id"`
+	State     string `json:"state"`
+	Outcome   string `json:"outcome,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 type OpenRequest struct {
+	Policy          *LanePolicy `json:"policy,omitempty"`
 	Name            string      `json:"name"`
 	Groups          []string    `json:"groups"`
 	ResumeSessionID string      `json:"resume_session_id,omitempty"`
@@ -103,12 +149,13 @@ type TurnResult struct {
 
 type DeliverySource struct {
 	SessionID string   `json:"session_id"`
-	Name      string   `json:"name"`
+	Name      string   `json:"name,omitempty"`
 	Product   string   `json:"product"`
 	Groups    []string `json:"groups"`
 }
 
 type DeliveryRequest struct {
+	RunID     string         `json:"run_id,omitempty"`
 	MessageID string         `json:"message_id"`
 	From      DeliverySource `json:"from"`
 	Body      string         `json:"body"`
@@ -125,10 +172,11 @@ type HostProducts struct {
 }
 
 type SessionSummary struct {
+	Policy    *LanePolicy    `json:"policy,omitempty"`
 	SessionID string         `json:"session_id"`
 	Kind      string         `json:"kind"`
 	Product   string         `json:"product"`
-	Name      string         `json:"name"`
+	Name      string         `json:"name,omitempty"`
 	Groups    []string       `json:"groups"`
 	Connected bool           `json:"connected"`
 	Running   bool           `json:"running"`
@@ -140,9 +188,16 @@ type SessionListRequest struct {
 	Host      string `json:"host,omitempty"`
 }
 type SessionListResult struct {
+	// SelfInfo is the originating caller, independent of list filters. Older
+	// daemons may omit it; never infer self from a session name or list order.
+	SelfInfo *SessionSelfInfo `json:"self_info,omitempty"`
 	Sessions []SessionSummary `json:"sessions"`
 	Hosts    []HostProducts   `json:"hosts,omitempty"`
 }
+
+// SessionSelfInfo uses the same public identity fields as a message source.
+// It excludes connection credentials, owner tokens and transport metadata.
+type SessionSelfInfo DeliverySource
 
 type MessageSendRequest struct {
 	Target  string   `json:"target,omitempty"`
@@ -173,6 +228,11 @@ type LaneDescribeRequest struct {
 type LaneDescribeResult = HelloDescription
 
 type LaneSpawnRequest struct {
+	Persistent      *bool        `json:"persistent,omitempty"`
+	AutoCloseMS     *int64       `json:"auto_close_ms,omitempty"`
+	IdleMessage     string       `json:"idle_message,omitempty"`
+	Notify          *bool        `json:"notify,omitempty"`
+	NotifyTarget    string       `json:"notify_target,omitempty"`
 	Name            string       `json:"name,omitempty"`
 	Product         string       `json:"product,omitempty"`
 	Host            string       `json:"host,omitempty"`
@@ -182,7 +242,8 @@ type LaneSpawnRequest struct {
 }
 
 type LaneSpawnResult struct {
-	SessionID string `json:"session_id"`
+	Policy    *LanePolicy `json:"policy,omitempty"`
+	SessionID string      `json:"session_id"`
 }
 type SessionTarget struct {
 	SessionID string `json:"session_id"`

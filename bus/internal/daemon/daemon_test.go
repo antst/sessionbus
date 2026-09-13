@@ -25,6 +25,7 @@ import (
 	"github.com/antst/sessionbus/bus/internal/structuredprocess"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
+	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
 
 func TestMain(m *testing.M) {
@@ -55,7 +56,7 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(os.Getenv("STDERR_PARENT_READY"), []byte("ready"), 0o600)
 		os.Exit(7)
 	}
-	if strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
+	if strings.HasPrefix(name, "wake-worker") || strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
 		worker := sessionkit.NewWorker(&fixtureProduct{product: name})
 		_ = worker.Serve(context.Background())
 		os.Exit(0)
@@ -96,8 +97,14 @@ func runOrderedWorker(product string) error {
 	if err = rawCall(fd, reader, 2, "session.list", protocol.SessionListRequest{SessionID: "ordered-native"}, &listed); err != nil || len(listed.Sessions) != 1 {
 		return fmt.Errorf("post-open list before commit: %v (%d rows)", err, len(listed.Sessions))
 	}
+	if listed.SelfInfo == nil || listed.SelfInfo.SessionID != "ordered-native@local" || listed.SelfInfo.Name != "parent/ordered@local" || listed.SelfInfo.Product != product || !slices.Equal(listed.SelfInfo.Groups, listed.Sessions[0].Groups) {
+		return fmt.Errorf("committed lane self identity: %#v", listed.SelfInfo)
+	}
+	if err = rawCall(fd, reader, 3, "session.list", protocol.SessionListRequest{SessionID: "parent"}, &listed); err != nil || len(listed.Sessions) != 1 || listed.Sessions[0].SessionID != "parent@local" || listed.SelfInfo == nil || listed.SelfInfo.SessionID != "ordered-native@local" {
+		return fmt.Errorf("lane list filtered to parent: %#v, %v", listed, err)
+	}
 	var sent protocol.MessageSendResult
-	return rawCall(fd, reader, 3, "message.send", protocol.MessageSendRequest{Target: "parent", Message: "after-commit"}, &sent)
+	return rawCall(fd, reader, 4, "message.send", protocol.MessageSendRequest{Target: "parent", Message: "after-commit"}, &sent)
 }
 
 func runRehelloWorker(product string) error {
@@ -180,7 +187,7 @@ type fixtureProduct struct {
 }
 
 func (p *fixtureProduct) Hello(context.Context) (sessionkit.HelloDescription, error) {
-	return sessionkit.HelloDescription{Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
+	return sessionkit.HelloDescription{SupportsMessageRun: strings.HasPrefix(p.product, "wake-worker"), Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
 }
 func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest) (sessionkit.OpenResult, error) {
 	if strings.HasPrefix(p.product, "open-exit-worker") {
@@ -228,7 +235,21 @@ func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest)
 	return sessionkit.OpenResult{SessionID: fmt.Sprintf("native-%d", os.Getpid())}, nil
 }
 
-func (p *fixtureProduct) Run(_ context.Context, run *sessionkit.Run, input string) (sessionkit.TurnResult, error) {
+func (p *fixtureProduct) Run(_ context.Context, run *sessionkit.Run, seed sessionkit.RunInput) (sessionkit.TurnResult, error) {
+	var input string
+	if seed.Text != nil {
+		input = *seed.Text
+	} else {
+		input = seed.Delivery.Body
+		if seed.Delivery.MessageID == "" || seed.Delivery.From.SessionID == "" {
+			return sessionkit.TurnResult{}, errors.New("missing delivery identity")
+		}
+		if input == "uncertain" {
+			_ = run.ReportDelivery(sessionkit.DeliveryReceipt{}, &sessionkit.ProtocolError{Code: protocol.Internal, Message: "internal"})
+		} else {
+			_ = run.ReportDelivery(sessionkit.DeliveryReceipt{Disposition: "written"}, nil)
+		}
+	}
 	if input == "fail" {
 		return sessionkit.TurnResult{}, errors.New("stream malformed")
 	}
@@ -280,9 +301,9 @@ func TestCloseErrorAfterFailedRunStillCloses(t *testing.T) {
 	parent := connectPeer(t, socket, "parent", "parent", "shared")
 	var spawned protocol.LaneSpawnResult
 	must(t, parent.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "close-error-worker", Open: &protocol.OpenOptions{}}, &spawned))
-	var turn protocol.TurnResult
+	var turn protocol.RunStatus
 	must(t, parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "fail"}, &turn))
-	if turn.Outcome != "failed" || turn.Result != "stream malformed" {
+	if turn.State != "unavailable" || turn.Reason != "stream malformed" {
 		t.Fatalf("failed run = %#v", turn)
 	}
 	must(t, parent.call("session.close", protocol.SessionCloseRequest{SessionID: spawned.SessionID}, &struct{}{}))
@@ -412,7 +433,7 @@ func TestTableRejectsUnknownColumnsAndDuplicateNames(t *testing.T) {
 }
 
 func TestProductConfigRejectsDuplicatesAndOmitsEmptyDiscovery(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	config := Config{SocketPath: filepath.Join(directory, "duplicate.sock"), TablePath: filepath.Join(directory, "sessions.json"), Products: []string{"tool", "tool"}}
 	if _, err := Start(config); err == nil || err.Error() != "duplicate advertised product" {
 		t.Fatalf("duplicate products = %v", err)
@@ -430,7 +451,7 @@ func TestProductConfigRejectsDuplicatesAndOmitsEmptyDiscovery(t *testing.T) {
 }
 
 func TestDaemonCloseEndsRawAndActiveSpawnConnections(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	installFixture(t, directory, "no-hello-worker")
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ready := filepath.Join(directory, "ready")
@@ -603,7 +624,7 @@ func TestWorkerHelloIsSingleUseAndUncommitted(t *testing.T) {
 }
 
 func TestSpawnRunCloseResumeForgetAndRestart(t *testing.T) {
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	installFixture(t, directory, "fixture-worker")
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("OPEN_LOG", filepath.Join(directory, "open.log"))
@@ -644,9 +665,9 @@ func TestSpawnRunCloseResumeForgetAndRestart(t *testing.T) {
 		t.Fatalf("groups = %#v, want %#v", listed.Sessions[0].Groups, wantGroups)
 	}
 
-	var turn protocol.TurnResult
+	var turn protocol.RunStatus
 	must(t, parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "echo"}, &turn))
-	if turn.Outcome != "completed" || turn.Result != "echo" {
+	if turn.Result == nil || turn.Result.Outcome != "completed" || turn.Result.Result != "echo" {
 		t.Fatalf("turn = %#v", turn)
 	}
 	if code := rpcCode(parent.call("turn.interrupt", protocol.SessionTarget{SessionID: spawned.SessionID}, &struct{}{})); code != protocol.NotRunning {
@@ -811,6 +832,7 @@ func TestSpawnDecisionAndExitDuringOpen(t *testing.T) {
 	d := &Daemon{host: "local", table: &table{path: filepath.Join(directory, "sessions")}, shutdown: make(chan struct{})}
 	d.directory = newDirectory(d, nil)
 	start := newLaunch("worker", false, true)
+	start.parent = &ownership{id: "parent@local", token: "fixture"}
 	item, code := d.directory.reserveFresh(row{Product: "worker", Name: "parent/child@local", Groups: []string{"parent", "child"}}, start)
 	if code != 0 {
 		t.Fatal(code)
@@ -895,9 +917,10 @@ func TestCallerEOFKeepsRunUntilWorkerTerminalOrClose(t *testing.T) {
 	_, socket := startDaemon(t)
 	owner := connectPeer(t, socket, "owner", "owner", "shared")
 	other := connectPeer(t, socket, "other", "other", "shared")
+	persistent := true
 	var spawned protocol.LaneSpawnResult
-	must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "fixture-worker", ExtraGroups: []string{"shared"}, Open: &protocol.OpenOptions{}}, &spawned))
-	result := protocol.TurnResult{}
+	must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Persistent: &persistent, Name: "child", Product: "fixture-worker", ExtraGroups: []string{"shared"}, Open: &protocol.OpenOptions{}}, &spawned))
+	result := protocol.RunStatus{}
 	run := make(chan error, 1)
 	go func() {
 		run <- owner.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "block"}, &result)
@@ -972,7 +995,7 @@ func TestWorkerCallsLeaveInAdmissionOrder(t *testing.T) {
 	parent := connectPeer(t, socket, "parent", "parent", "shared")
 	var spawned protocol.LaneSpawnResult
 	must(t, parent.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "sequence-worker", Open: &protocol.OpenOptions{}}, &spawned))
-	var result protocol.TurnResult
+	var result protocol.RunStatus
 	run := make(chan error, 1)
 	go func() {
 		run <- parent.call("turn.run", protocol.TurnRunRequest{SessionID: spawned.SessionID, Input: "block"}, &result)
@@ -1024,20 +1047,12 @@ func TestMessageSendReturnsOneOrderedReceiptPerResolvedLabel(t *testing.T) {
 
 func startDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
-	directory := shortTempDir(t)
+	directory := testsocket.Directory(t)
 	socket := filepath.Join(directory, "sessionbus.sock")
 	d, err := Start(Config{SocketPath: socket, TablePath: filepath.Join(directory, "sessions.json")})
 	must(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d, socket
-}
-
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "sb-")
-	must(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return directory
 }
 
 func installFixture(t *testing.T, directory, name string) {
@@ -1096,4 +1111,51 @@ func waitFile(t *testing.T, path string) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("file %s was not created", path)
+}
+
+func TestUnnamedPeerHelloDeliveryAndTitleAssertions(t *testing.T) {
+	d, socket := startDaemon(t)
+	unnamed := connectPeer(t, socket, "native-id", "", "team")
+	named := connectPeer(t, socket, "named-id", "named", "team")
+	for _, title := range []string{"", "first title", ""} {
+		must(t, unnamed.peer.Rehello(context.Background(), title, map[string]any{}))
+		var listed map[string]any
+		must(t, named.call("session.list", protocol.SessionListRequest{SessionID: "native-id@local"}, &listed))
+		row := listed["sessions"].([]any)[0].(map[string]any)
+		want := qualify(title, "local")
+		if title == "" {
+			if _, ok := row["name"]; ok {
+				t.Fatalf("absent name serialized: %#v", row)
+			}
+		} else if row["name"] != want {
+			t.Fatalf("title = %#v", row)
+		}
+		for _, input := range []protocol.MessageSendRequest{{Target: "native-id", Message: "direct"}, {Group: "team", Message: "group"}} {
+			var sent protocol.MessageSendResult
+			must(t, named.call("message.send", input, &sent))
+			if len(sent.Deliveries) != 1 || sent.Deliveries[0].SessionID != "native-id@local" || sent.Deliveries[0].Disposition != "injected" {
+				t.Fatalf("unnamed target: %#v", sent)
+			}
+			<-unnamed.deliveries
+		}
+		var sent protocol.MessageSendResult
+		must(t, unnamed.call("message.send", protocol.MessageSendRequest{Target: "named", Message: "source"}, &sent))
+		source := (<-named.deliveries).From
+		raw, err := json.Marshal(source)
+		must(t, err)
+		if source.Name != want || title == "" && strings.Contains(string(raw), `"name"`) {
+			t.Fatalf("source = %s", raw)
+		}
+	}
+	d.directory.mu.Lock()
+	found, ambiguous := d.directory.resolveLocked("", []string{"team"})
+	d.directory.mu.Unlock()
+	if found != nil || ambiguous {
+		t.Fatal("unnamed peer matched empty name")
+	}
+	var sent protocol.MessageSendResult
+	must(t, named.call("message.send", protocol.MessageSendRequest{Target: "first title", Message: "removed"}, &sent))
+	if sent.Deliveries[0].Reason != "unknown_session" {
+		t.Fatalf("removed name matched: %#v", sent)
+	}
 }

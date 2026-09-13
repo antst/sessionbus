@@ -24,6 +24,9 @@ func main() {
 }
 
 func run(arguments []string) error {
+	if len(arguments) > 0 && arguments[0] == "add-host" {
+		return addHost(arguments[1:])
+	}
 	set := flag.NewFlagSet("sessionbus-hub", flag.ContinueOnError)
 	listen, path := "", ""
 	set.StringVar(&listen, "listen", os.Getenv("SESSIONBUS_HUB_LISTEN"), "TCP listen address")

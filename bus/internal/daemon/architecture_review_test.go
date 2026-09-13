@@ -72,6 +72,7 @@ func TestReviewAbortKeepsReservationThroughCleanup(t *testing.T) {
 	d := &Daemon{}
 	d.directory = newDirectory(d, nil)
 	start := newLaunch("worker", false, true)
+	start.parent = &ownership{id: "parent@local", token: "fixture"}
 	defer start.timer.Stop()
 	item, code := d.directory.reserveFresh(row{Name: "parent/lane@local"}, start)
 	if code != 0 {
@@ -116,7 +117,7 @@ func TestReviewRunTerminalPrecedesCloseReply(t *testing.T) {
 		t.Fatal("close reply was written before the run terminal")
 	}
 	_ = peer.SetReadDeadline(time.Time{})
-	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.TurnResult{Outcome: "completed", Result: "done"}}})
+	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}}}})
 	reader := bufio.NewReader(peer)
 	readID := func() int64 {
 		body, err := reader.ReadBytes('\n')
@@ -166,7 +167,7 @@ func TestReviewAllCloseRepliesFinishAfterRun(t *testing.T) {
 	s.owned = 3
 	s.consumeReply(replyEvent{requestID: 2, answer: answer{value: struct{}{}}})
 	s.consumeReply(replyEvent{requestID: 3, answer: answer{code: protocol.Busy}})
-	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.TurnResult{Outcome: "completed", Result: "done"}}})
+	s.consumeReply(replyEvent{requestID: 1, answer: answer{value: &protocol.RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &protocol.TurnResult{Outcome: "completed", Result: "done"}}}})
 	if len(s.requests) != 0 {
 		t.Fatalf("%d completed close reply remains held with no pending run or helper", len(s.requests))
 	}
@@ -236,6 +237,7 @@ func TestReviewClaimedLaneRejectsNewControl(t *testing.T) {
 		}
 	}
 	start := newLaunch("", false, false)
+	start.parent = &ownership{id: "parent@local", token: "fixture"}
 	t.Cleanup(func() { start.timer.Stop() })
 	if _, code = d.directory.reserveResume(item.row.SessionID, item.row.Groups, start); code != protocol.Busy {
 		t.Fatalf("resume of claimed lane = %d", code)

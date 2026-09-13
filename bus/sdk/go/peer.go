@@ -63,6 +63,7 @@ func (p *Peer) Err() error {
 	return p.terminal
 }
 
+// Rehello replaces the name and info; an empty name removes the native name.
 func (p *Peer) Rehello(ctx context.Context, name string, info map[string]any) error {
 	next, wire, generation, unchanged, err := p.desire(Identity{Name: name, Info: info}, false)
 	if err != nil {
@@ -296,6 +297,13 @@ func (p *Peer) handle(wire *rpc.Conn, request *rpc.Request) {
 			receipt := DeliveryReceipt{Disposition: "rejected", Reason: "closing"}
 			if current && err == nil {
 				receipt, err = p.deliver(identityCtx, identity, *request.Params.(*DeliveryRequest))
+			}
+			var failure *ProtocolError
+			if errors.As(err, &failure) && failure.Code == protocol.Internal {
+				if wire.Error(request, failure.Code, failure.Data) != nil {
+					_ = wire.Close()
+				}
+				return
 			}
 			if err != nil {
 				receipt = DeliveryReceipt{Disposition: "rejected", Reason: err.Error()}
