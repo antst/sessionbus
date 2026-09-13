@@ -120,6 +120,18 @@ match the registration. `add-host` is idempotent for the same name/key, rejects
 implicit key replacement and duplicate secrets, and edits configuration only;
 restart the hub to load it. `SESSIONBUS_HUB_LISTEN` in `hub.env` changes the
 listener. `XDG_CONFIG_HOME` changes the installer and `add-host` default configuration location.
+
+The host daemon reconnects automatically when the hub returns, using bounded
+backoff. Local peers and local operations remain available while the hub is
+unreachable, including at daemon startup. A hub restart does not require
+restarting host daemons. Configuration errors such as an invalid address or
+malformed secret still prevent startup. Operations interrupted by a lost hub
+connection fail without replay; a lost message receipt is reported as
+`no_receipt`, so do not assume the remote action did not execute. Remote
+Worker ownership ends with the lost connection and is not restored by reconnect.
+Use `sessionbus roster --local` to inspect local peers during a hub outage;
+the default roster reports incomplete federation until recovery.
+
 The host installer waits at most ten seconds for an authenticated local list response.
 Hub installation reports service activation only; inspect the service status/logs
 to confirm its listener. Preserved `hub.env` can override its default port and host map.

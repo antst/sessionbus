@@ -162,6 +162,8 @@ SESSIONBUS_HUB, and SESSIONBUS_HUB_SECRET_FILE. The installer preserves those
 settings in ${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env; the service
 manager loads that file.
 Prefer -hub-secret-file over placing a secret in process arguments.
+Hub outages do not stop local service: the daemon retries its connection with
+bounded backoff. Lost remote operations fail without automatic replay.
 
 Daemon flags:
 `
