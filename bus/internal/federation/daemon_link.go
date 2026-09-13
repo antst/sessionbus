@@ -87,6 +87,14 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 					continue
 				}
 				pending[nextID] = pendingCall{event.Value.Request.Method, event.Reply}
+			case RosterCall:
+				nextID++
+				body, err := requestBytes(nextID, rosterMethod, struct{}{})
+				if cause != nil || err != nil || !wire.Send(body) {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					continue
+				}
+				pending[nextID] = pendingCall{rosterMethod, event.Reply}
 			case HostsCall:
 				nextID++
 				body, err := requestBytes(nextID, hostsMethod, struct{}{})
@@ -138,6 +146,26 @@ func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, w
 	}
 	if frame.ID <= *lastIn {
 		return errFrame
+	}
+	if frame.Method == rosterMethod {
+		*lastIn = frame.ID
+		var request map[string]json.RawMessage
+		if protocol.DecodeJSON(frame.Params, &request) != nil || request == nil || len(request) != 0 {
+			return errFrame
+		}
+		wait, err := admit(IncomingCall{Request: PublicRequest{Method: rosterMethod, Params: frame.Params}})
+		if err != nil {
+			return err
+		}
+		value, ok := wait(wire.Done())
+		if !ok {
+			return errFrame
+		}
+		body, err := ResponseBytes(frame.ID, value)
+		if err != nil || !wire.Send(body) {
+			return errFrame
+		}
+		return nil
 	}
 	if frame.Method == ownerEndMethod || frame.Method == hostEndMethod {
 		*lastIn = frame.ID

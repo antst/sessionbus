@@ -32,6 +32,7 @@ type Daemon struct {
 	table      *table
 	directory  *directory
 	listener   net.Listener
+	operator   *operatorServer
 	shutdown   chan struct{}
 	done       chan struct{}
 	acceptDone chan struct{}
@@ -90,8 +91,14 @@ func Start(config Config) (*Daemon, error) {
 	d := &Daemon{config: config, host: config.Host, table: store, listener: listener,
 		shutdown: make(chan struct{}), done: make(chan struct{}), acceptDone: make(chan struct{})}
 	d.directory = newDirectory(d, rows)
+	if err = d.startOperator(); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
 	if config.HubAddress != "" {
 		if err = d.connectFederation(); err != nil {
+			close(d.shutdown)
+			d.operator.close()
 			_ = listener.Close()
 			_ = os.Remove(config.SocketPath)
 			return nil, err
@@ -147,6 +154,9 @@ func (d *Daemon) Close() error {
 	d.directory.mu.Unlock()
 	_ = d.listener.Close()
 	close(d.shutdown)
+	if d.operator != nil {
+		d.operator.close()
+	}
 	<-d.acceptDone
 	d.group.Wait()
 	_ = os.Remove(d.config.SocketPath)
