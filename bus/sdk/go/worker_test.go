@@ -216,6 +216,10 @@ func (p *fakeProduct) Error() string {
 	return "failed exactly"
 }
 func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *workerHarness {
+	return startHarnessContext(t, context.Background(), p, acknowledge, openNow)
+}
+
+func startHarnessContext(t *testing.T, ctx context.Context, p *fakeProduct, acknowledge, openNow bool) *workerHarness {
 	setEnvironment(t, "token", "")
 	worker, daemon := net.Pipe()
 	p.worker = NewWorker(p)
@@ -247,7 +251,7 @@ func startHarness(t *testing.T, p *fakeProduct, acknowledge, openNow bool) *work
 			}
 		}
 	})
-	go p.worker.Serve(context.Background())
+	go p.worker.Serve(ctx)
 	<-hello
 	t.Cleanup(func() { p.worker.Shutdown(); <-p.worker.Closed() })
 	harness := &workerHarness{Conn: h, waitWritten: transport.waitWritten}

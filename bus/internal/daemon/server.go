@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -27,17 +28,18 @@ type Config struct {
 }
 
 type Daemon struct {
-	config     Config
-	host       string
-	table      *table
-	directory  *directory
-	listener   net.Listener
-	operator   *operatorServer
-	shutdown   chan struct{}
-	done       chan struct{}
-	acceptDone chan struct{}
-	group      sync.WaitGroup
-	federation *federationLink
+	config           Config
+	host             string
+	table            *table
+	directory        *directory
+	listener         net.Listener
+	operator         *operatorServer
+	shutdown         chan struct{}
+	done             chan struct{}
+	acceptDone       chan struct{}
+	group            sync.WaitGroup
+	federation       *federationLink
+	federationCancel context.CancelFunc
 }
 
 func Start(config Config) (*Daemon, error) {
@@ -148,6 +150,9 @@ func (d *Daemon) Close() error {
 		return nil
 	}
 	d.directory.closing = true
+	if d.federationCancel != nil {
+		d.federationCancel()
+	}
 	if d.federation != nil {
 		d.federation.cancel()
 	}
