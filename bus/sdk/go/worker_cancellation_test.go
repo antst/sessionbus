@@ -78,16 +78,15 @@ func TestWorkerCancellationClosesUnacknowledgedHello(t *testing.T) {
 	w := NewWorker(&fakeProduct{})
 	client, server := net.Pipe()
 	defer server.Close()
-	entered := make(chan struct{})
+	writeStarted := make(chan struct{})
 	w.dial = func(context.Context, string, string) (net.Conn, error) {
-		close(entered)
-		return client, nil
+		return &workerHelloWrite{Conn: client, entered: writeStarted}, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serving := make(chan error, 1)
 	go func() { serving <- w.Serve(ctx) }()
-	<-entered
+	<-writeStarted
 	// The server never reads, so the hello write itself cannot finish.
 	cancel()
 	select {
@@ -98,6 +97,16 @@ func TestWorkerCancellationClosesUnacknowledgedHello(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancellation did not close the startup transport")
 	}
+}
+
+type workerHelloWrite struct {
+	net.Conn
+	entered chan struct{}
+}
+
+func (c *workerHelloWrite) Write(body []byte) (int, error) {
+	close(c.entered) // This fixture permits exactly the initial hello write.
+	return c.Conn.Write(body)
 }
 
 func TestWorkerShutdownBeforeServeAndSecondServe(t *testing.T) {
