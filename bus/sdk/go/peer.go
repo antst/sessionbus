@@ -18,7 +18,7 @@ import (
 const defaultPeerReconnectInterval = 2 * time.Second
 
 var peerReconnectInterval = defaultPeerReconnectInterval
-var dialPeer = net.Dial
+var dialPeer = (&net.Dialer{}).DialContext
 
 type DeliverFunc func(context.Context, PeerIdentity, DeliveryRequest) (DeliveryReceipt, error)
 
@@ -40,6 +40,14 @@ type Peer struct {
 }
 
 func ConnectPeer(identity PeerIdentity, deliver DeliverFunc) (*Peer, error) {
+	return ConnectPeerContext(context.Background(), identity, deliver)
+}
+
+// ConnectPeerContext binds the peer connection and every reconnect attempt to ctx.
+func ConnectPeerContext(ctx context.Context, identity PeerIdentity, deliver DeliverFunc) (*Peer, error) {
+	if ctx == nil {
+		return nil, errors.New("peer context is nil")
+	}
 	socket, _, err := sessionEnvironment(false)
 	if err != nil {
 		return nil, err
@@ -48,8 +56,8 @@ func ConnectPeer(identity PeerIdentity, deliver DeliverFunc) (*Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	p := &Peer{identity: identity, deliver: deliver, socket: socket, ctx: ctx, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
+	peerCtx, cancel := context.WithCancel(ctx)
+	p := &Peer{identity: identity, deliver: deliver, socket: socket, ctx: peerCtx, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
 	p.Caller = NewCaller(p.Call)
 	go p.connect()
 	return p, nil
@@ -180,7 +188,7 @@ func (p *Peer) connect() {
 	defer close(p.closed)
 	ready := p.ready
 	for {
-		fd, err := dialPeer("unix", p.socket)
+		fd, err := dialPeer(p.ctx, "unix", p.socket)
 		if err == nil {
 			var wire *rpc.Conn
 			wire = rpc.New(fd, true, func(_ context.Context, request *rpc.Request) { p.handle(wire, request) })
