@@ -5,8 +5,15 @@ admin channel was removed. It supersedes the universal design's assertion that
 ordinary `session.list` replaces all operator diagnostics. The public protocol,
 SDK methods, group visibility, and native product ownership remain unchanged.
 
-`sessionbus roster [--json] [--local] [--socket PUBLIC_SOCKET] [--timeout 15s]`
-uses a separate mode-0600 Unix endpoint in the daemon's existing owner-validated
+`sessionbus roster [--all] [--json] [--local] [--socket PUBLIC_SOCKET] [--timeout 15s]`
+
+The CLI displays rows with `connected || running` by default. `--all` includes
+offline and retained/archived entries. Filtering applies to local and remote
+rows in table and JSON output, after decoding the operator response. The wire
+inventory and its bounds are unchanged; host errors and completeness remain
+visible even when all of a host's rows are hidden.
+
+The command uses a separate mode-0600 Unix endpoint in the daemon's existing owner-validated
 mode-0700 runtime directory. Its name is `op-<first 16 SHA256 bytes of public basename as hex>.sock`,
 shorter than the mandatory derived lane endpoint. Only stale sockets are
 removed; ordinary files, symlinks, and active endpoints are rejected. Closing

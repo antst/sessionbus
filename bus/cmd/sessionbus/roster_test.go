@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +68,105 @@ func TestRosterCommandHumanJSONAndNoRegisteredObserver(t *testing.T) {
 	}
 	if err = runRoster([]string{"--help"}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRosterCommandActiveDefaultAndAll(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		for _, all := range []bool{false, true} {
+			for _, localOnly := range []bool{false, true} {
+				t.Run(fmt.Sprintf("json=%t/all=%t/local=%t", asJSON, all, localOnly), func(t *testing.T) {
+					socket := filepath.Join(testsocket.Directory(t), "presence.sock")
+					listener, err := net.Listen("unix", roster.Socket(socket))
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = listener.Close() })
+					if err := listener.(*net.UnixListener).SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+						t.Fatal(err)
+					}
+					rows := []roster.Row{
+						{SessionID: "online-idle", Kind: "peer", Connected: true},
+						{SessionID: "online-lane", Kind: "lane", Connected: true, Persistent: true},
+						{SessionID: "active-run", Kind: "lane", Running: true},
+						{SessionID: "offline-peer", Kind: "peer"},
+						{SessionID: "archived-lane", Kind: "lane", Persistent: true},
+					}
+					done := make(chan error, 1)
+					go func() {
+						fd, err := listener.Accept()
+						if err != nil {
+							done <- err
+							return
+						}
+						defer fd.Close()
+						_ = fd.SetDeadline(time.Now().Add(3 * time.Second))
+						var request roster.Request
+						if err = json.NewDecoder(fd).Decode(&request); err != nil {
+							done <- err
+							return
+						}
+						if request.Local != localOnly {
+							done <- fmt.Errorf("local request = %t", request.Local)
+							return
+						}
+						value := roster.Report{Schema: roster.Schema, Complete: localOnly, Local: roster.Host{Host: "local", Sessions: rows}, Remote: []roster.Host{}}
+						if !localOnly {
+							value.Remote = []roster.Host{
+								{Host: "remote", Sessions: rows},
+								{Host: "offline", Sessions: rows[3:]},
+								{Host: "legacy", Error: "upgrade_host_for_roster", Sessions: []roster.Row{}},
+							}
+						}
+						done <- json.NewEncoder(fd).Encode(value)
+					}()
+					args := []string{"--socket", socket, "--timeout", "3s"}
+					for flag, enabled := range map[string]bool{"--json": asJSON, "--all": all, "--local": localOnly} {
+						if enabled {
+							args = append(args, flag)
+						}
+					}
+					var out bytes.Buffer
+					err = runRoster(args, &out)
+					if serverErr := <-done; serverErr != nil {
+						t.Fatal(serverErr)
+					}
+					if localOnly && err != nil || !localOnly && (err == nil || !strings.Contains(err.Error(), "incomplete")) {
+						t.Fatalf("roster error = %v", err)
+					}
+					if asJSON {
+						var got roster.Report
+						if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+							t.Fatal(err)
+						}
+						wanted := rows[:3]
+						if all {
+							wanted = rows
+						}
+						if !slices.EqualFunc(got.Local.Sessions, wanted, func(a, b roster.Row) bool { return a.SessionID == b.SessionID }) {
+							t.Fatalf("local rows = %#v", got.Local.Sessions)
+						}
+						if !localOnly {
+							if !slices.EqualFunc(got.Remote[0].Sessions, wanted, func(a, b roster.Row) bool { return a.SessionID == b.SessionID }) || got.Complete || got.Remote[2].Error != "upgrade_host_for_roster" {
+								t.Fatalf("remote report = %#v", got)
+							}
+							if !all && (got.Remote[1].Sessions == nil || len(got.Remote[1].Sessions) != 0) {
+								t.Fatal("filtered host must retain an empty JSON array")
+							}
+						}
+					} else {
+						for i, row := range rows {
+							if strings.Contains(out.String(), row.SessionID) != (all || i < 3) {
+								t.Fatalf("row visibility differs: %s: %s", row.SessionID, out.String())
+							}
+						}
+						if !localOnly && !strings.Contains(out.String(), "upgrade_host_for_roster") {
+							t.Fatal("filter hid remote error")
+						}
+					}
+				})
+			}
+		}
 	}
 }
 
