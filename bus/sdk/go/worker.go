@@ -82,6 +82,9 @@ type Worker struct {
 	dial         func(context.Context, string, string) (net.Conn, error)
 	mu           sync.Mutex
 	conn         *rpc.Conn
+	serveStarted bool
+	shuttingDown bool
+	serveCancel  context.CancelFunc
 	context      context.Context
 	cancel       context.CancelFunc
 	run          *Run
@@ -105,7 +108,23 @@ func (w *Worker) Closed() <-chan struct{} { return w.closed }
 func (w *Worker) Caller() *Caller         { return w.caller }
 
 func (w *Worker) Serve(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("worker context is nil")
+	}
+	w.mu.Lock()
+	if w.serveStarted {
+		w.mu.Unlock()
+		return errors.New("worker Serve is single-use")
+	}
+	w.serveStarted = true
+	ctx, cancel := context.WithCancel(ctx)
+	w.serveCancel = cancel
+	if w.shuttingDown {
+		cancel()
+	}
+	w.mu.Unlock()
 	defer close(w.closed)
+	defer cancel()
 	endpoint, token, err := sessionEnvironment(true)
 	if err != nil {
 		return err
@@ -119,12 +138,32 @@ func (w *Worker) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.conn = rpc.New(fd, true, w.handle)
-	w.context, w.cancel = context.WithCancel(w.conn.Context())
+	// The reader cannot dispatch a frame before the connection and product
+	// lifetime are published. Shutdown owns cancellation even before dialing.
+	assigned := make(chan struct{})
+	conn := rpc.New(fd, true, func(ctx context.Context, request *rpc.Request) {
+		<-assigned
+		w.handle(ctx, request)
+	})
+	w.mu.Lock()
+	w.conn = conn
+	w.context, w.cancel = context.WithCancel(conn.Context())
+	w.mu.Unlock()
+	close(assigned)
+	stopDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(stopDone) })
+	defer func() {
+		if !stop() {
+			<-stopDone
+		}
+	}()
 	request := protocol.WorkerHello{Protocol: 1, LaunchToken: token, HelloDescription: hello}
 	if err = w.conn.Call(ctx, "session.hello", request, &struct{}{}); err == nil {
 		<-w.conn.Done()
 		err = rpc.ErrClosed
+	}
+	if ctx.Err() != nil {
+		err = ctx.Err()
 	}
 	_ = w.conn.Close()
 	w.mu.Lock()
@@ -137,10 +176,29 @@ func (w *Worker) Serve(ctx context.Context) error {
 }
 
 func (w *Worker) Call(ctx context.Context, method string, params, result any) error {
-	return w.conn.Call(ctx, method, params, result)
+	w.mu.Lock()
+	conn := w.conn
+	w.mu.Unlock()
+	if conn == nil {
+		return errNotConnected
+	}
+	return conn.Call(ctx, method, params, result)
 }
 
-func (w *Worker) Shutdown() { _ = w.conn.Close() }
+// Shutdown cancels startup or the active transport. Serve owns product cleanup;
+// callers that started Serve can wait for Closed to observe its completion.
+func (w *Worker) Shutdown() {
+	w.mu.Lock()
+	w.shuttingDown = true
+	cancel, conn := w.serveCancel, w.conn
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
 
 func (w *Worker) handle(ctx context.Context, request *rpc.Request) {
 	switch request.Method {
