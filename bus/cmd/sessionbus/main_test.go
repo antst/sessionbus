@@ -70,14 +70,14 @@ func TestSecretCommand(t *testing.T) {
 
 func TestProductsEnvironmentAndFlagPrecedence(t *testing.T) {
 	t.Setenv("SESSIONBUS_HUB", "")
-	t.Setenv("SESSIONBUS_PRODUCTS", "codex-peer,dashi")
+	t.Setenv("SESSIONBUS_PRODUCTS", "one-peer,two-peer")
 	for _, row := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"environment", nil, "codex-peer,dashi"},
-		{"override", []string{"-products", "claude-peer"}, "claude-peer"},
+		{"environment", nil, "one-peer,two-peer"},
+		{"override", []string{"-products", "three-peer"}, "three-peer"},
 		{"clear", []string{"-products", ""}, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
