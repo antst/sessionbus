@@ -223,3 +223,90 @@ func TestPublicSocketRejectsOperatorRPCBeforeAndAfterHello(t *testing.T) {
 		_ = fd.Close()
 	}
 }
+
+// An authenticated hub must negotiate the private operator capability before
+// the daemon admits a direct roster control frame (not a public forwarded RPC).
+func TestDaemonRosterAdmissionRequiresNegotiatedCapability(t *testing.T) {
+	for _, capable := range []bool{false, true} {
+		label := "no-alpn"
+		if capable {
+			label = "roster-alpn"
+		}
+		t.Run(label, func(t *testing.T) {
+			secret, err := federation.NewSecret()
+			must(t, err)
+			serverConfig, err := federation.ServerTLS(map[string]string{"alpha": secret})
+			must(t, err)
+			if !capable {
+				original := serverConfig.GetConfigForClient
+				serverConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					config, err := original(hello)
+					if err != nil {
+						return nil, err
+					}
+					config = config.Clone()
+					config.NextProtos = nil
+					return config, nil
+				}
+			}
+			listener, err := tls.Listen("tcp", "127.0.0.1:0", serverConfig)
+			must(t, err)
+			defer listener.Close()
+			accepted := make(chan net.Conn, 1)
+			acceptErrors := make(chan error, 1)
+			go func() {
+				fd, err := listener.Accept()
+				if err == nil {
+					err = fd.(*tls.Conn).Handshake()
+				}
+				if err != nil {
+					if fd != nil {
+						_ = fd.Close()
+					}
+					acceptErrors <- err
+					return
+				}
+				accepted <- fd
+			}()
+			clientConfig, err := federation.ClientTLS("alpha", secret)
+			must(t, err)
+			client, err := tls.Dial("tcp", listener.Addr().String(), clientConfig)
+			must(t, err)
+			defer client.Close()
+			var hub net.Conn
+			select {
+			case hub = <-accepted:
+			case err = <-acceptErrors:
+				t.Fatal(err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("TLS accept stalled")
+			}
+			defer hub.Close()
+			if federation.SupportsRoster(client) != capable {
+				t.Fatal("wrong negotiated capability")
+			}
+			socket := filepath.Join(testsocket.Directory(t), "presence.sock")
+			d, err := Start(Config{SocketPath: socket, TablePath: filepath.Join(t.TempDir(), "rows"), Host: "alpha"})
+			must(t, err)
+			defer d.Close()
+			_ = connectPeer(t, socket, "private", "Private", "private-group")
+			must(t, d.StartFederation(context.Background(), client, io.Discard))
+			must(t, hub.SetDeadline(time.Now().Add(5*time.Second)))
+			_, err = io.WriteString(hub, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"federation.roster\",\"params\":{}}\n")
+			must(t, err)
+			frame, err := readRawFrame(bufio.NewReader(hub))
+			if !capable {
+				if err != io.EOF {
+					t.Fatalf("unnegotiated roster was not rejected: frame=%#v err=%v", frame, err)
+				}
+				return
+			}
+			must(t, err)
+			result, err := roster.DecodeRemote(frame.Result)
+			must(t, err)
+			if len(result.Hosts) != 1 || len(result.Hosts[0].Sessions) != 1 || result.Hosts[0].Sessions[0].SessionID != "private@alpha" {
+				t.Fatalf("negotiated roster=%#v", result)
+			}
+		})
+	}
+}
