@@ -40,7 +40,8 @@ Replace `vX.Y.Z` with an actual [release tag](https://github.com/antst/sessionbu
 Development builds are opt-in: use `SESSIONBUS_VERSION=development sh` in the
 same pipeline. The rolling development prerelease follows tested `develop`
 builds and can change between installations.
-See the [v0.5.1 release notes](docs/releases/v0.5.1.md) for scope and upgrade order.
+See the [v0.5.2 release notes](docs/releases/v0.5.2.md) for the current patch,
+and [v0.5.1](docs/releases/v0.5.1.md) for federation upgrade order.
 `SESSIONBUS_DOWNLOAD_ROOT` can select a mirror containing the same archives and
 `SHA256SUMS`. Missing releases or checksum failures stop before installation.
 You can download and inspect the script before executing it.
@@ -51,10 +52,15 @@ You can download and inspect the script before executing it.
 sessionbus roster
 sessionbus roster --json
 sessionbus roster --local
+sessionbus roster --all
 ```
 
-`roster` is the daemon owner's operational view of **all groups**. It includes
-connected peers and retained lanes, product, name, session ID, groups,
+`roster` is the daemon owner's operational view of **all groups**. By default it
+shows online peers and lanes, plus any lane with an active Run
+(`connected || running`).
+Use `--all` to include offline and retained/archived entries. This filter applies
+to both table and JSON output, on local and remote hosts. Rows include product,
+name, session ID, groups,
 connected/running state, lane owner, persistence, and requested lane permission
 mode. Federated hosts contribute the same live metadata. It does not expose
 messages, results, native arguments, arbitrary peer `info`, credentials, or

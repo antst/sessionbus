@@ -25,6 +25,7 @@ func runRoster(arguments []string, output io.Writer) error {
 	set := flag.NewFlagSet("sessionbus roster", flag.ContinueOnError)
 	set.SetOutput(output)
 	asJSON := set.Bool("json", false, "emit sessionbus.roster.v1 JSON")
+	all := set.Bool("all", false, "include offline peers and retained/archived lanes")
 	local := set.Bool("local", false, "inspect this host only")
 	socket := set.String("socket", sessionkit.Socket(), "daemon's public Unix socket path")
 	timeout := set.Duration("timeout", 15*time.Second, "total roster deadline")
@@ -60,6 +61,12 @@ func runRoster(arguments []string, output io.Writer) error {
 	if err = protocol.DecodeJSON(body, &value); err != nil || value.Schema != roster.Schema {
 		return errors.New("invalid operator roster response")
 	}
+	if !*all {
+		value.Local.Sessions = activeRosterRows(value.Local.Sessions)
+		for i := range value.Remote {
+			value.Remote[i].Sessions = activeRosterRows(value.Remote[i].Sessions)
+		}
+	}
 	if *asJSON {
 		encoder := json.NewEncoder(output)
 		encoder.SetIndent("", "  ")
@@ -74,6 +81,16 @@ func runRoster(arguments []string, output io.Writer) error {
 		return errors.New("operator roster is incomplete; see host errors (use --local for local-only inspection)")
 	}
 	return nil
+}
+
+func activeRosterRows(rows []roster.Row) []roster.Row {
+	active := make([]roster.Row, 0, len(rows))
+	for _, row := range rows {
+		if row.Connected || row.Running {
+			active = append(active, row)
+		}
+	}
+	return active
 }
 
 func renderRoster(output io.Writer, value roster.Report) error {
