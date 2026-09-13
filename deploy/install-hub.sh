@@ -3,13 +3,19 @@
 # Download a checksummed release; the archive owns the installation recipe.
 set -eu
 role=hub
-version=${SESSIONBUS_VERSION:-development}
+version=${SESSIONBUS_VERSION:-latest}
 case "$version" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid SESSIONBUS_VERSION' >&2; exit 1;; esac
 case "$(uname -s)" in Linux) platform=linux;; Darwin) platform=darwin;; *) echo 'Supported systems: Linux and macOS' >&2; exit 1;; esac
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo 'Supported architectures: amd64 and arm64' >&2; exit 1;; esac
 for cmd in curl tar awk mktemp; do command -v "$cmd" >/dev/null || { echo "Required command: $cmd" >&2; exit 1; }; done
 asset="sessionbus-$role-$platform-$arch.tar.gz"
-base=${SESSIONBUS_DOWNLOAD_ROOT:-https://github.com/antst/sessionbus/releases/download/$version}
+if [ -n "${SESSIONBUS_DOWNLOAD_ROOT:-}" ]; then
+ base=$SESSIONBUS_DOWNLOAD_ROOT
+elif [ "$version" = latest ]; then
+ base=https://github.com/antst/sessionbus/releases/latest/download
+else
+ base=https://github.com/antst/sessionbus/releases/download/$version
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' 0
 trap 'exit 1' HUP INT TERM
