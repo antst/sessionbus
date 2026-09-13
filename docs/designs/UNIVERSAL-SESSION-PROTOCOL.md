@@ -457,7 +457,7 @@ remains unresponsive, the caller closes the session.
 Either a caller sends `session.close` to the daemon or the daemon sends it to
 the addressed lane. The request has optional `forget`, default false. The
 worker asks the product to close and always returns `{}`; a product cleanup
-error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from daemon close admission, bounds the entire close path. A result before the bound makes the
+error is one quoted line on worker stderr. One constant `closeBound = 10s`, measured from when the daemon sends `session.close` to the Worker, bounds the entire close path. A result before the bound makes the
 daemon close the socket, send TERM, and reap; expiry makes it close the socket,
 send KILL, and reap with no second waiting period. The spawn/open transaction
 bound and `closeBound` remain the two operation bounds; the independent
@@ -670,7 +670,7 @@ Only lanes have durable rows. A row has exactly these columns:
 | `groups` | Full resume-membership recipe containing the parent's private group, the recursively composed `<parent private group>/<leaf>`, and explicit `extra_groups`; no other parent membership is inherited. |
 | `open` | The original validated `SessionOpenOptions` value, re-marshalled unchanged on resume with `arguments` order preserved. |
 | `created_at` | Daemon timestamp assigned when the row commits. |
-| `policy` | Normalized independent lifetime, auto-close, idle-message and notification selection. Older rows without it receive fresh defaults on resume. |
+| `policy` | Normalized independent lifetime, auto-close, idle-message and notification selection. Older rows without it load as persistent, non-notifying lanes with no auto-close, preserving their original lifetime behavior. |
 
 Each row is one JSON file named `<sha256(session_id)>.json`. A commit writes and
 syncs a temporary file, renames it to that name, and syncs the containing
@@ -2108,7 +2108,7 @@ not a reason to move lines into a product integration.
 | W1 | Describe launch reads the endpoint, consumes and scrubs the token and reserved local-key value, rejects that value when nonempty, sends one valid hello after app-ready when it is empty, never opens or closes natively, and exits on EOF without reconnect. |
 | W2 | Fresh and resumed open return the exact product session ID; resume mismatch, unsupported field or value, typed-field/argument conflict, duplicate session ID, exit, and timeout fail truthfully. |
 | W3 | Worker-originated client-to-daemon session methods are `not_committed` before open commit; after a successful open response, already-read later frames are withheld from dispatch until the durable commit and then succeed without a kit-side wait. Commit failure closes the provisional connection. |
-| W4 | Completed, interrupted, failed, empty-output, and over-limit native results produce the exact terminal and `truncated` shapes; a second run is busy. |
+| W4 | Completed, interrupted, failed, and empty-output native results produce the exact terminal shapes; over-limit native output produces `unavailable`; a second run is busy. |
 | W5 | Reader remains full-duplex: delivery and a worker-originated session method complete while run is blocked; delivery receipts are exact. |
 | W6 | Concurrent interrupt and close invoke one native interrupt; terminal-before-interrupt invokes none. |
 | W7 | Close claims the slot before product code, rejects later delivery as closing, writes the one run response from its run owner, and completes interrupt/terminal/close-response/socket-close/`closed` ordering within the daemon's one 10-second `closeBound`; an unresponsive callback is killed at that bound. |

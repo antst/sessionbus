@@ -402,6 +402,41 @@ func TestDurableTableWritesSixColumnsAndLoads(t *testing.T) {
 	}
 }
 
+func TestLegacyDurableRowListsCompatibilityPolicy(t *testing.T) {
+	directory := testsocket.Directory(t)
+	path := filepath.Join(directory, "sessions")
+	table, _, err := openTable(path)
+	must(t, err)
+	legacy := row{
+		SessionID: "legacy@local", Product: "fixture-worker", Name: "parent/legacy@local",
+		Groups: []string{"session:parent@local", "session:parent@local/legacy", "shared"},
+		Open:   protocol.OpenOptions{Cwd: "/work"}, CreatedAt: time.Unix(10, 0).UTC(),
+	}
+	must(t, table.write(legacy))
+	raw, err := os.ReadFile(filepath.Join(path, rowFile(legacy.SessionID)))
+	must(t, err)
+	var fields map[string]json.RawMessage
+	must(t, json.Unmarshal(raw, &fields))
+	if len(fields) != 6 || fields["policy"] != nil {
+		t.Fatalf("legacy fixture is not a six-field row: %s", raw)
+	}
+
+	socket := filepath.Join(directory, "sessionbus.sock")
+	daemon, err := Start(Config{SocketPath: socket, TablePath: path})
+	must(t, err)
+	t.Cleanup(func() { _ = daemon.Close() })
+	peer := connectPeer(t, socket, "observer", "observer", "shared")
+	var listed protocol.SessionListResult
+	must(t, peer.call("session.list", protocol.SessionListRequest{SessionID: legacy.SessionID}, &listed))
+	if len(listed.Sessions) != 1 {
+		t.Fatalf("legacy sessions = %#v", listed.Sessions)
+	}
+	policy := listed.Sessions[0].Policy
+	if policy == nil || !policy.Persistent || policy.AutoCloseMS != 0 || policy.IdleMessage != "stage" || policy.Notify || policy.OwnerSessionID != "" || policy.NotifyTarget != "" {
+		t.Fatalf("legacy policy = %#v", policy)
+	}
+}
+
 func TestTableRejectsUnknownColumnsAndDuplicateNames(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "sessions")

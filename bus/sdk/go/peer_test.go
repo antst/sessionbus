@@ -222,6 +222,38 @@ func TestPeerRejectedHelloIsTerminal(t *testing.T) {
 	}
 }
 
+func TestPeerContextCancelsInitialDial(t *testing.T) {
+	oldDial, oldInterval := dialPeer, peerReconnectInterval
+	entered, returned := make(chan struct{}), make(chan struct{})
+	dialPeer = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(entered)
+		<-ctx.Done()
+		close(returned)
+		return nil, ctx.Err()
+	}
+	peerReconnectInterval = time.Millisecond
+	t.Setenv("SESSIONBUS_SOCKET", "fixture.sock")
+	t.Cleanup(func() { dialPeer, peerReconnectInterval = oldDial, oldInterval })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	peer, err := ConnectPeerContext(ctx, PeerIdentity{Product: "fixture-client", SessionID: "peer", Name: "peer", Groups: []string{}, Info: map[string]any{}}, acceptDelivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, entered, "initial dial")
+	cancel()
+	await(t, returned, "canceled dial")
+	await(t, peer.Closed(), "peer closed")
+	select {
+	case <-peer.Ready():
+		t.Fatal("canceled initial dial became ready")
+	default:
+	}
+	if peer.Err() != nil {
+		t.Fatalf("canceled peer terminal error = %v", peer.Err())
+	}
+}
+
 func TestPeerReplaceSettlesOldRunAndReconnectsAsNewIdentity(t *testing.T) {
 	connections := make(chan net.Conn, 2)
 	usePeerDialer(t, func(string, string) (net.Conn, error) {
@@ -447,7 +479,9 @@ type rehelloFixture struct {
 func usePeerDialer(t *testing.T, dial func(string, string) (net.Conn, error)) {
 	t.Helper()
 	oldDial, oldInterval := dialPeer, peerReconnectInterval
-	dialPeer, peerReconnectInterval = dial, time.Millisecond
+	dialPeer, peerReconnectInterval = func(_ context.Context, network, address string) (net.Conn, error) {
+		return dial(network, address)
+	}, time.Millisecond
 	t.Setenv("SESSIONBUS_SOCKET", "fixture.sock")
 	t.Cleanup(func() { dialPeer, peerReconnectInterval = oldDial, oldInterval })
 }

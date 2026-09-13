@@ -53,6 +53,11 @@ func openTable(path string) (*table, []row, error) {
 		if readErr != nil || json.Unmarshal(raw, &fields) != nil || (len(fields) != 6 && len(fields) != 7) || decoder.Decode(&value) != nil || file.Name() != rowFile(value.SessionID) || value.Name == "" || len(value.Groups) < 2 || ids[value.SessionID] || names[value.Name] {
 			return nil, nil, errors.New("invalid durable session table")
 		}
+		if len(fields) == 6 {
+			// Rows written before lane policy existed behaved as durable lanes:
+			// they survived owner exit and had no terminal auto-close or notification.
+			value.Policy = &protocol.LanePolicy{Persistent: true, IdleMessage: "stage"}
+		}
 		if value.Policy != nil {
 			if _, err := protocol.EncodeResult("lane.spawn", protocol.LaneSpawnResult{SessionID: value.SessionID, Policy: value.Policy}); err != nil {
 				return nil, nil, errors.New("invalid durable lane policy")

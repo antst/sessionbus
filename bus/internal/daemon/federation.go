@@ -18,13 +18,14 @@ import (
 )
 
 type federationLink struct {
+	roster bool
 	inbox  chan any
 	cancel context.CancelFunc
 }
 
 func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Writer) error {
 	linkCtx, cancel := context.WithCancel(ctx)
-	link := &federationLink{inbox: make(chan any, conn.OutboxSize), cancel: cancel}
+	link := &federationLink{inbox: make(chan any, conn.OutboxSize), cancel: cancel, roster: federation.SupportsRoster(fd)}
 	d.directory.mu.Lock()
 	if d.federation != nil || d.directory.closing {
 		d.directory.mu.Unlock()
@@ -35,9 +36,13 @@ func (d *Daemon) StartFederation(ctx context.Context, fd net.Conn, stderr io.Wri
 	d.federation = link
 	d.group.Add(1)
 	d.directory.mu.Unlock()
+	admit := d.directory.admitFederation
+	if link.roster {
+		admit = d.admitFederationWithRoster
+	}
 	go func() {
 		defer d.group.Done()
-		_ = federation.ServeDaemon(linkCtx, d.host, fd, link.inbox, d.directory.admitFederation, stderr, d.directory.remoteEnded)
+		_ = federation.ServeDaemon(linkCtx, d.host, fd, link.inbox, admit, stderr, d.directory.remoteEnded)
 		cancel()
 		d.directory.remoteEnded(federation.LifetimeEvent{})
 		d.directory.mu.Lock()
@@ -73,6 +78,8 @@ func settleFederationQueue(inbox chan any) {
 			case federation.OwnerEndCall:
 				call.Reply <- lost
 			case federation.HostsCall:
+				call.Reply <- lost
+			case federation.RosterCall:
 				call.Reply <- lost
 			}
 		default:
