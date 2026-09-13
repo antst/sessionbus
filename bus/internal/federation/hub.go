@@ -44,6 +44,7 @@ const (
 	registryForward
 	registryReply
 	registryOwnerEnd
+	registryRoster
 )
 
 type registryEvent struct {
@@ -59,16 +60,17 @@ type registryEvent struct {
 }
 
 type hostLink struct {
-	attachment string
-	ctx        context.Context
-	host       string
-	fd, raw    net.Conn
-	wire       *conn.Conn
-	inbox      chan any
-	registry   chan<- registryEvent
-	done       chan struct{}
-	group      sync.WaitGroup
-	log        io.Writer
+	attachment  string
+	rosterSlots chan struct{}
+	ctx         context.Context
+	host        string
+	fd, raw     net.Conn
+	wire        *conn.Conn
+	inbox       chan any
+	registry    chan<- registryEvent
+	done        chan struct{}
+	group       sync.WaitGroup
+	log         io.Writer
 }
 
 type hubState struct {
@@ -200,6 +202,8 @@ func (s *hubState) handle(ctx context.Context, inbox chan<- registryEvent, event
 			raw, _ := json.Marshal(hostsResult{Hosts: hosts})
 			s.reply(originReply{event.link, event.id, Reply{Result: raw}})
 		}
+	case registryRoster:
+		s.roster(ctx, inbox, event.link, event.id)
 	case registryForward:
 		s.forward(ctx, inbox, event.link, *event.forward)
 	case registryOwnerEnd:
@@ -237,7 +241,7 @@ func newHostLink(ctx context.Context, host string, fd, raw net.Conn, registry ch
 	if _, err := rand.Read(identity); err != nil {
 		panic(err)
 	}
-	link := &hostLink{attachment: hex.EncodeToString(identity), ctx: ctx, host: host, fd: fd, raw: raw, inbox: make(chan any, conn.OutboxSize), registry: registry, done: make(chan struct{}), log: log}
+	link := &hostLink{rosterSlots: make(chan struct{}, 8), attachment: hex.EncodeToString(identity), ctx: ctx, host: host, fd: fd, raw: raw, inbox: make(chan any, conn.OutboxSize), registry: registry, done: make(chan struct{}), log: log}
 	link.wire = conn.Start(fd, link.inbox, &link.group)
 	return link
 }
@@ -267,6 +271,18 @@ func (l *hostLink) run(accepted bool) {
 			failed, stopping = true, nil
 		case raw := <-l.inbox:
 			switch event := raw.(type) {
+			case outgoingRoster:
+				if failed || len(pending) >= maxPendingForwardedPerHost {
+					event.reply <- errorReply(protocol.ForwardLost, nil)
+					continue
+				}
+				nextID++
+				body, err := requestBytes(nextID, rosterMethod, struct{}{})
+				if err != nil || !l.wire.Send(body) {
+					event.reply <- errorReply(protocol.ForwardLost, nil)
+					continue
+				}
+				pending[nextID] = pendingCall{rosterMethod, event.reply}
 			case lifetimeCall:
 				if failed || len(pending) >= maxPendingForwardedPerHost {
 					event.Reply <- errorReply(protocol.ForwardLost, nil)
@@ -339,6 +355,8 @@ func (l *hostLink) settleQueued() {
 		select {
 		case value := <-l.inbox:
 			switch call := value.(type) {
+			case outgoingRoster:
+				call.reply <- errorReply(protocol.ForwardLost, nil)
 			case outgoingForward:
 				call.reply <- errorReply(protocol.ForwardLost, nil)
 			case lifetimeCall:
@@ -368,6 +386,14 @@ func (l *hostLink) frame(event conn.Frame, pending map[int64]pendingCall, lastIn
 		return errFrame
 	}
 	*lastIn = frame.ID
+	if frame.Method == rosterMethod {
+		var params map[string]json.RawMessage
+		if !SupportsRoster(l.fd) || protocol.DecodeJSON(frame.Params, &params) != nil || params == nil || len(params) != 0 {
+			return errFrame
+		}
+		postRegistry(l.ctx, l.registry, registryEvent{kind: registryRoster, link: l, id: frame.ID})
+		return nil
+	}
 	if frame.Method == hostsMethod {
 		var params map[string]json.RawMessage
 		if protocol.DecodeJSON(frame.Params, &params) != nil || params == nil || len(params) != 0 {
@@ -410,6 +436,10 @@ func validReply(method string, frame protocol.Frame) bool {
 	}
 	if method == ownerEndMethod || method == hostEndMethod {
 		return validControlReply(frame)
+	}
+	if method == rosterMethod {
+		_, err := decodeRosterReply(frame.Result)
+		return err == nil
 	}
 	if method == hostsMethod {
 		_, err := DecodeHosts(Reply{Result: frame.Result})

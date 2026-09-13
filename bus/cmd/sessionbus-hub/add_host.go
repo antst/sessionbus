@@ -7,15 +7,25 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/antst/sessionbus/bus/internal/federation"
 )
 
 // addHost is an offline config edit. The hub deliberately reloads only on restart.
 func addHost(args []string) error {
+	return addHostWithIO(args, os.Stdout, os.Stderr)
+}
+
+func addHostWithIO(args []string, stdout, stderr io.Writer) (result error) {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		writeAddHostHelp(stdout)
+		return nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -29,6 +39,8 @@ func addHost(args []string) error {
 		defaultConfig = filepath.Join(root, "sessionbus/hub.json")
 	}
 	set := flag.NewFlagSet("sessionbus-hub add-host", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	set.Usage = func() { writeAddHostHelp(stderr) }
 	config := set.String("config", defaultConfig, "hub host map")
 	secretFile := set.String("secret-file", "", "host's mode-0600 join secret file")
 	if err := set.Parse(args); err != nil {
@@ -50,6 +62,11 @@ func addHost(args []string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := lockHostConfig(resolved)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, lock.Close()) }()
 	secrets, err := loadSecrets(resolved)
 	if err != nil {
 		return err
@@ -58,7 +75,7 @@ func addHost(args []string) error {
 		if old != secret {
 			return fmt.Errorf("host %q already exists with a different secret; explicit rotation is required", host)
 		}
-		fmt.Println("Host already registered:", host)
+		fmt.Fprintln(stdout, "Host already registered:", host)
 		return nil
 	}
 	secrets[host] = secret
@@ -81,6 +98,40 @@ func addHost(args []string) error {
 	if err := os.Rename(f.Name(), resolved); err != nil {
 		return err
 	}
-	fmt.Printf("Registered %s. Restart sessionbus-hub to load the updated host map.\n", host)
+	fmt.Fprintf(stdout, "Registered %s. Restart sessionbus-hub to load the updated host map.\n", host)
 	return nil
+}
+
+type hostConfigLock struct{ file *os.File }
+
+func lockHostConfig(config string) (*hostConfigLock, error) {
+	file, err := os.OpenFile(config+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		_ = file.Close()
+		return nil, errors.New("hub config lock must be a mode-0600 regular file")
+	}
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &hostConfigLock{file: file}, nil
+}
+
+func (l *hostConfigLock) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+	return errors.Join(syscall.Flock(int(file.Fd()), syscall.LOCK_UN), file.Close())
 }

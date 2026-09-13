@@ -60,7 +60,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	}
 	identity := sdk.PeerIdentity{Product: "sessionbus-call", SessionID: id, Name: name, Groups: splitGroups(groups), Info: map[string]any{}}
 	var outputMu sync.Mutex
-	peer, err := sdk.ConnectPeer(identity, func(_ context.Context, _ sdk.PeerIdentity, request sdk.DeliveryRequest) (sdk.DeliveryReceipt, error) {
+	peer, err := sdk.ConnectPeerContext(ctx, identity, func(_ context.Context, _ sdk.PeerIdentity, request sdk.DeliveryRequest) (sdk.DeliveryReceipt, error) {
 		outputMu.Lock()
 		defer outputMu.Unlock()
 		_ = json.NewEncoder(stderr).Encode(request)
