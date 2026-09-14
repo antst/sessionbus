@@ -28,9 +28,11 @@ type Caller struct {
 }
 
 type PublicRequest struct {
-	Method    string          `json:"method"`
-	Params    json.RawMessage `json:"params"`
-	MessageID string          `json:"message_id,omitempty"`
+	Method    string            `json:"method"`
+	Params    json.RawMessage   `json:"params"`
+	MessageID string            `json:"message_id,omitempty"`
+	Trace     bool              `json:"trace,omitempty"`
+	TraceCopy *TraceDestination `json:"trace_copy,omitempty"`
 }
 
 type Forward struct {
@@ -42,6 +44,7 @@ type Reply struct {
 	Result   json.RawMessage
 	Error    *protocol.RPCError
 	ErrorRaw json.RawMessage
+	Trace    []TraceRecipient
 }
 
 type hostsResult struct {
@@ -61,6 +64,31 @@ func requestBytes(id int64, method string, value any) ([]byte, error) {
 }
 
 func ResponseBytes(id int64, reply Reply) ([]byte, error) {
+	return responseBytes(id, reply, false)
+}
+
+func responseBytes(id int64, reply Reply, internal bool) ([]byte, error) {
+	if internal && reply.Trace != nil {
+		value, err := encodeTraceReply(reply)
+		if err != nil {
+			return nil, err
+		}
+		if body, frameErr := rawResponseBytes(id, `,"result":`, value); frameErr == nil {
+			return body, nil
+		}
+		withoutRecipients := reply
+		withoutRecipients.Trace = []TraceRecipient{}
+		value, err = encodeTraceReply(withoutRecipients)
+		if err != nil {
+			return nil, err
+		}
+		if body, frameErr := rawResponseBytes(id, `,"result":`, value); frameErr == nil {
+			return body, nil
+		}
+		// Eligibility metadata is diagnostic. If even the empty envelope would
+		// make an otherwise valid reply too large, preserve the ordinary reply.
+		return responseBytes(id, reply, false)
+	}
 	key, value := `,"result":`, reply.Result
 	if reply.Error != nil {
 		key, value = `,"error":`, reply.ErrorRaw
@@ -71,6 +99,10 @@ func ResponseBytes(id int64, reply Reply) ([]byte, error) {
 	if len(value) == 0 {
 		return nil, errFrame
 	}
+	return rawResponseBytes(id, key, value)
+}
+
+func rawResponseBytes(id int64, key string, value []byte) ([]byte, error) {
 	body := append([]byte(`{"jsonrpc":"2.0","id":`), strconv.FormatInt(id, 10)...)
 	body = append(body, key...)
 	body = append(body, value...)
@@ -82,7 +114,7 @@ func ResponseBytes(id int64, reply Reply) ([]byte, error) {
 }
 
 func errorReply(code int, data any) Reply {
-	message := map[int]string{protocol.InvalidFrame: "invalid_frame", protocol.UnknownHost: "unknown_host", protocol.ForwardLost: "forward_lost"}[code]
+	message := map[int]string{protocol.InvalidFrame: "invalid_frame", protocol.UnknownHost: "unknown_host", protocol.ForwardLost: "forward_lost", protocol.UnsupportedTrace: "unsupported_trace"}[code]
 	raw, _ := json.Marshal(data)
 	if data == nil {
 		raw = nil

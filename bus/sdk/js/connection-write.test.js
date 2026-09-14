@@ -13,10 +13,23 @@ const { Connection } = require("./connection.js");
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 class HeldStream extends EventEmitter {
   callbacks = [];
+  bodies = [];
   destroy() { this.destroyed = true; }
-  write(body, callback) { this.callbacks.push(callback); return false; }
+  write(body, callback) { this.bodies.push(Buffer.from(body)); this.callbacks.push(callback); return false; }
 }
 const request = { id: 1, method: "session.close" };
+
+test("unsupported trace response has the exact no-data wire error", async () => {
+  const stream = new HeldStream(), connection = new Connection(stream, false);
+  const result = connection.error(request, -32016);
+  assert.deepEqual(JSON.parse(stream.bodies[0]), {
+    jsonrpc: "2.0", id: 1, error: { code: -32016, message: "unsupported_trace" },
+  });
+  stream.callbacks[0](); await result;
+  assert.throws(() => connection.error(request, -32016, "upgrade"));
+  assert.equal(stream.bodies.length, 1);
+  connection.close(); stream.emit("close");
+});
 
 for (const method of ["session.hello", "session.list"]) test(`actual socket close settles ${method} with withheld completed-write callback`, { timeout: 5000 }, async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "kit-write-"));

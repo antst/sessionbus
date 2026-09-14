@@ -31,6 +31,18 @@
       }
     },
     {
+      "action": "trace",
+      "method": "trace.configure",
+      "request": {
+        "session_id": "lane@local",
+        "mode": "events"
+      },
+      "result": {
+        "session_id": "lane@local",
+        "mode": "events"
+      }
+    },
+    {
       "action": "status",
       "method": "turn.status",
       "request": {

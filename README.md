@@ -119,6 +119,96 @@ check. It does not grant peer visibility: ordinary session lists remain
 restricted by groups. Lane requests resolve the requested executable on the
 service `PATH` even if it is not advertised.
 
+### Parent-controlled child tracing
+
+Tracing defaults to **off**. A parent can select `"trace":"events"` or
+`"trace":"content"` in the Sessionbus tool's `spawn` arguments, for a fresh or
+resumed lane. `events` includes message identities and delivery outcomes;
+`content` also includes the message body. To change a child's mode while it runs:
+
+```json
+{"action":"trace","arguments":{"session_id":"child-id@host","mode":"content"}}
+```
+
+Use `"mode":"off"` to stop tracing. Only the child's live parent can configure
+it; sharing a group or reusing an old parent's session ID does not grant access.
+This also works for persistent children, but the tracing relationship itself
+does not survive its parent ending or a daemon restart. Resume under the new
+parent to establish a new relationship; no previous tracing policy is restored.
+
+After the original send settles, its originating daemon sends one ordinary
+message to each eligible parent. If two children of the same parent communicate,
+that parent gets one copy, including both `matched_children` and their delivery
+results. The copy has a new message ID; its JSON body has `kind: sessionbus.trace`,
+the original `message_id`, `from`, permitted recipients/results, and an optional
+`body`. It is a daemon report, not a request from the original sender. Do not
+reply to its generated daemon identity. Copies and their completion pointers
+do not generate more copies.
+
+Normal parent delivery policy applies: an idle-run parent can start a Run,
+while a staging parent receives the message for a later turn. Copy delivery
+never holds up the original result. Copies are best-effort, memory-bounded and
+not retried; an unconfirmed copy may nevertheless have reached its recipient.
+Original `written` or `no_receipt` outcomes keep their existing meanings and do
+not prove native consumption.
+
+`off` prevents subsequent admissions; it does not recall original sends already
+admitted with a trace snapshot, so a copy may still arrive after `off`, including
+from remote origins. Local child snapshots are discarded if their policy changes
+before emission. Snapshots are never upgraded, and a copy is refused at arrival
+if its parent's lifetime has ended.
+
+There is **no new persistence**: no trace history, read API, replay, disk queue,
+or changes to durable lane rows. Normal native transcripts may retain delivered
+messages as usual. Tracing works with communication logging disabled. Updated
+daemons, hub and SDK/tool declarations are required for remote tracing; older
+hosts continue ordinary messaging. See the [tracing design](docs/designs/COMMUNICATION-TRACE.md)
+for the scope and compatibility contract.
+
+### Communication logs
+
+Communication logging is **off by default**. To enable it, edit
+`${XDG_CONFIG_HOME:-$HOME/.config}/sessionbus/service.env` and restart the daemon:
+
+```sh
+SESSIONBUS_COMMS_LOG=metadata   # off | metadata | content
+# SESSIONBUS_COMMS_LOG_DIR=/absolute/private/directory
+```
+
+`metadata` records message routing and receipts, lane requests and Run state
+transitions. `content` additionally records message text. Native prompts, Run
+result bodies, arbitrary peer info, arguments, credentials and authorization
+tokens are not logged. The installer preserves an existing `service.env`.
+
+The daemon writes one structured JSONL stream at
+`${XDG_STATE_HOME:-$HOME/.local/state}/sessionbus/comms/sessionbus.jsonl`.
+Each record has UTC time, a daemon incarnation and sequence number. Message
+records identify `from` and `to` with canonical session IDs including `@host`,
+plus names and products when known. The send header retains the requested target,
+targets or group; separate dispatch and receipt records identify each resolved
+recipient by `message_id` and `delivery_id`. An unresolved target stays a requested
+selector, with its rejection reason; no recipient identity is invented. Rejection
+before dispatch produces a receipt without a delivery ID; an admitted delivery
+that loses its receipt retains its delivery ID and reports `no_receipt`. A
+multi-target send stores its body once per observing host, not once per recipient.
+Federated observations on different hosts correlate by the same message ID.
+
+Defaults retain four files of up to 16 MiB each, including the current file.
+Files are private (0600), in a private directory (0700). The daemon flags
+`-comms-log-max-bytes`, `-comms-log-files` and `-comms-log-queue-bytes` control
+bounds. Optional `-comms-log-sessions` and `-comms-log-groups` select events without
+creating duplicate group/session files. Filters match known endpoint identities
+and groups at each observation. A recipient-only filter can retain dispatch and
+receipt rows while omitting the earlier header whose recipient was not yet
+resolved. Leave filters unset to retain complete send headers and message text.
+
+Logging never waits for disk writes in a routing loop. Queue pressure produces
+gap records; a disk error stops logging and reports a diagnostic on stderr.
+Shutdown joins the writer. Retention, a crash or a disk failure can lose records;
+this is diagnostic logging, not proof that every communication was retained.
+Logging does not enable parent tracing or deliver messages to a parent. The
+[child tracing](#parent-controlled-child-tracing) is separate.
+
 ### Connect hosts to a hub
 
 Host installation generates `~/.config/sessionbus/host.key` once (mode 0600).

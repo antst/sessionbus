@@ -23,7 +23,7 @@ func TestReviewHostScopedGroupConsumesWholeResult(t *testing.T) {
 	s := pullReviewSender(d)
 	input := &protocol.MessageSendRequest{Group: "team", Host: "beta", Message: "hello"}
 	raw, _ := protocol.EncodeParams("message.send", input)
-	if !s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input) {
+	if !s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input, "message-fixture") {
 		t.Fatal("host-scoped group was not forwarded")
 	}
 	call := (<-d.federation.inbox).(federation.OutgoingCall)
@@ -47,7 +47,7 @@ func TestReviewMixedMulticastDeduplicatesBeforeDelivery(t *testing.T) {
 	s := pullReviewSender(d)
 	input := &protocol.MessageSendRequest{Targets: []string{"recipient@alpha", "recipient-id@alpha", "away@beta"}, Message: "once"}
 	raw, _ := protocol.EncodeParams("message.send", input)
-	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input)
+	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input, "message-fixture")
 	count := len(target.inbox)
 	var deliveredID string
 	for len(target.inbox) != 0 {
@@ -93,7 +93,7 @@ func TestReviewEmptyHostGroupReturnsSuccessfulEmptyArray(t *testing.T) {
 	s := pullReviewSender(d)
 	input := &protocol.MessageSendRequest{Group: "team", Host: "beta", Message: "hello"}
 	raw, _ := protocol.EncodeParams("message.send", input)
-	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input)
+	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input, "message-fixture")
 	call := (<-d.federation.inbox).(federation.OutgoingCall)
 	result, _ := protocol.EncodeResult("message.send", protocol.MessageSendResult{MessageID: call.Value.Request.MessageID, Deliveries: []protocol.MessageSendDelivery{}})
 	call.Reply <- federation.Reply{Result: result}
@@ -114,7 +114,7 @@ func TestReviewUnknownHostGroupRemainsUnknownHost(t *testing.T) {
 	s := pullReviewSender(d)
 	input := &protocol.MessageSendRequest{Group: "team", Host: "beta", Message: "hello"}
 	raw, _ := protocol.EncodeParams("message.send", input)
-	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input)
+	s.sendFederated(protocol.Frame{ID: 1, Method: "message.send", Params: raw, Request: true}, input, "message-fixture")
 	s.consumeReply((<-s.inbox).(replyEvent))
 	reply := <-s.forwarded
 	if reply.Error == nil || reply.Error.Code != protocol.UnknownHost {

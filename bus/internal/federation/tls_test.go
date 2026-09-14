@@ -77,6 +77,20 @@ func TestPinnedTLS(t *testing.T) {
 	if clientState.Version != tls.VersionTLS13 || serverState.Version != tls.VersionTLS13 {
 		t.Fatalf("versions = %x, %x", clientState.Version, serverState.Version)
 	}
+	if clientState.NegotiatedProtocol != TraceALPN || serverState.NegotiatedProtocol != TraceALPN {
+		t.Fatalf("protocols = %q, %q", clientState.NegotiatedProtocol, serverState.NegotiatedProtocol)
+	}
+}
+
+func TestTraceALPNFallsBackToRoster(t *testing.T) {
+	secret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	server, _ := ServerTLS(map[string]string{"alpha": secret})
+	client, _ := ClientTLS("alpha", secret)
+	client.NextProtos = []string{RosterALPN}
+	clientState, serverState, clientErr, serverErr := handshake(client, server)
+	if clientErr != nil || serverErr != nil || clientState.NegotiatedProtocol != RosterALPN || serverState.NegotiatedProtocol != RosterALPN {
+		t.Fatalf("roster fallback = %q/%q, %v/%v", clientState.NegotiatedProtocol, serverState.NegotiatedProtocol, clientErr, serverErr)
+	}
 }
 
 func TestServerTLSRejectsInvalidConfiguration(t *testing.T) {

@@ -40,5 +40,8 @@ type (
 	SessionCloseRequest = protocol.SessionCloseRequest
 )
 
+type TraceConfigureRequest = protocol.TraceConfigureRequest
+type TraceConfigureResult = protocol.TraceConfigureResult
+
 // SessionSchema returns a private copy of the universal wire schema.
 func SessionSchema() []byte { return append([]byte(nil), protocol.SessionSchema...) }

@@ -252,7 +252,8 @@
         "auto_close_ms": {"type":"integer","minimum":0,"maximum":9223372036854},
         "idle_message": {"enum":["stage","run"]},
         "notify": {"type":"boolean"},
-        "notify_target": {"type":"string","minLength":1}
+        "notify_target": {"type":"string","minLength":1},
+        "trace": {"enum":["off","events","content"]}
       },
       "allOf": [
         {
@@ -274,6 +275,24 @@
       "additionalProperties": false,
       "required": ["session_id"],
       "properties": {"session_id": {"type": "string", "minLength": 1},"policy":{"$ref":"#/$defs/LanePolicy"}}
+    },
+    "TraceConfigureRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "mode"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["off", "events", "content"]}
+      }
+    },
+    "TraceConfigureResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "mode"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["off", "events", "content"]}
+      }
     },
     "SessionOpenRequest": {
       "type": "object",
@@ -345,8 +364,8 @@
       "additionalProperties": false,
       "required": ["code", "message"],
       "properties": {
-        "code": {"enum": [-32600, -32602, -32603, -32001, -32002, -32003, -32004, -32005, -32007, -32008, -32009, -32010, -32011, -32012, -32013, -32014, -32015]},
-        "message": {"enum": ["invalid_frame", "invalid_hello", "internal", "unknown_session", "not_connected", "busy", "not_running", "already_connected", "unknown_product", "unsupported_open_field", "spawn_failed", "timeout", "not_committed", "superseded", "name_taken", "unknown_host", "forward_lost"]},
+        "code": {"enum": [-32600, -32602, -32603, -32001, -32002, -32003, -32004, -32005, -32007, -32008, -32009, -32010, -32011, -32012, -32013, -32014, -32015, -32016]},
+        "message": {"enum": ["invalid_frame", "invalid_hello", "internal", "unknown_session", "not_connected", "busy", "not_running", "already_connected", "unknown_product", "unsupported_open_field", "spawn_failed", "timeout", "not_committed", "superseded", "name_taken", "unknown_host", "forward_lost", "unsupported_trace"]},
         "data": {}
       },
       "allOf": [
@@ -362,7 +381,7 @@
         {"if": {"properties": {"code": {"const": -32009}}}, "then": {"properties": {"message": {"const": "spawn_failed"}}}},
         {"if": {"properties": {"code": {"const": -32010}}}, "then": {"properties": {"message": {"const": "timeout"}}}},
         {"if": {"properties": {"code": {"const": -32011}}}, "then": {"properties": {"message": {"const": "not_committed"}}}},
-        {"if": {"properties": {"code": {"const": -32012}}}, "then": {"properties": {"message": {"const": "superseded"}}}}, {"if": {"properties": {"code": {"const": -32013}}}, "then": {"properties": {"message": {"const": "name_taken"}}}}, {"if": {"properties": {"code": {"const": -32014}}}, "then": {"properties": {"message": {"const": "unknown_host"}}}}, {"if": {"properties": {"code": {"const": -32015}}}, "then": {"properties": {"message": {"const": "forward_lost"}}}}, {"if": {"properties": {"code": {"const": -32603}}}, "then": {"properties": {"message": {"const": "internal"}}}},
+        {"if": {"properties": {"code": {"const": -32012}}}, "then": {"properties": {"message": {"const": "superseded"}}}}, {"if": {"properties": {"code": {"const": -32013}}}, "then": {"properties": {"message": {"const": "name_taken"}}}}, {"if": {"properties": {"code": {"const": -32014}}}, "then": {"properties": {"message": {"const": "unknown_host"}}}}, {"if": {"properties": {"code": {"const": -32015}}}, "then": {"properties": {"message": {"const": "forward_lost"}}}}, {"if": {"properties": {"code": {"const": -32016}}}, "then": {"properties": {"message": {"const": "unsupported_trace"}}}}, {"if": {"properties": {"code": {"const": -32603}}}, "then": {"properties": {"message": {"const": "internal"}}}},
         {
           "if": {"properties": {"code": {"const": -32009}}, "required": ["code"]},
           "then": {"required": ["data"], "properties": {"data": {"$ref": "#/$defs/SpawnFailedData"}}},

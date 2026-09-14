@@ -123,7 +123,7 @@ Peer identity and groups are asserted rather than attested on the trusted local
 socket, and federation trusts the remote daemon's assertions. No peer
 credentials, signatures, or other security machinery belong in this protocol.
 
-There are seventeen methods.
+There are eighteen methods.
 
 #### `session.hello`
 
@@ -249,6 +249,15 @@ callback returns/throws the existing public `ProtocolError` with code `-32603`
 Both Peer and Worker kits preserve that RPC error instead of converting it to
 a native-adapter rejection. The daemon reports its existing `rejected/no_receipt`:
 no native receipt was obtained, and whether the product acted is unknown.
+When the destination daemon rejects a delivery before enqueueing it because the
+selected target has no current connection, it instead reports
+`rejected/not_submitted`. That reason proves only this delivery attempt was not
+dispatched; it says nothing about an earlier attempt or a future connection.
+A connection lost after dispatch, a stale response, or an uncertain native
+admission still reports `no_receipt`. A remote destination can return the same
+proven `not_submitted` receipt; loss of the federation response cannot establish
+that fact. Older daemons may still use `no_receipt` for an offline target, so
+callers must not infer non-submission from connection state alone.
 A completed write followed by native EOF without response bytes may report
 `written`; EOF itself adds no acknowledgment. Partial or uncertain completion
 must use the error path, not `written`. Neither path retries or replays.
@@ -277,7 +286,8 @@ readiness object or readiness phase.
 A session sends `lane.spawn` either with a caller-chosen name leaf, product, open
 options, optional `extra_groups`, and optional `host` for a new lane, or with
 `resume_session_id` for a durable offline lane. Both forms accept the independent
-policy fields below; native open options cannot be overridden on resume. A peer's private group is
+policy fields below and optional live `trace` mode `off`, `events`, or
+`content`; native open options cannot be overridden on resume. A peer's private group is
 `session:<id@host>`. A lane's private group is `<parent private group>/<leaf>`;
 its default groups are exactly its parent's private group and that new private
 group, plus `extra_groups`. The parent's other memberships are not inherited,
@@ -341,6 +351,32 @@ attachment. Name updates preserve it; different-ID replacement or actual detach
 ends it. A subsequent reconnect cannot revive cleanup already admitted.
 Publication rechecks owner lifetime, including loss during provisional Open.
 The worker launch-token claimant and visibility groups are not lifetime owners.
+
+#### `trace.configure`
+
+A parent sends `trace.configure {session_id,mode}` with mode `off`, `events`,
+or `content` for one direct child. The result is the effective
+`{session_id,mode}` at the live observation boundary. Only the daemon-validated
+live parent relationship grants this authority; visibility, group membership,
+or a claimed session ID does not. The setting defaults to `off`, is held only
+in memory, and is neither `LanePolicy` nor durable row state. An omitted
+`lane.spawn.trace`, including on resume, selects `off`; a former parent's
+setting is never inherited.
+
+The initial `events` scope covers Sessionbus message-send and settled-delivery
+metadata. `content` additionally includes the message body. Run/lane lifecycle
+events and native prompt or result content are outside this slice. A parent copy
+uses ordinary `message.send` / `message.deliver` body delivery, with no new
+delivery fields or event transport. Copies are live and best-effort: there is no
+trace persistence, replay, catch-up, or recovery after restart.
+
+This remains protocol 1, but the method and spawn field extend closed request
+schemas. Daemon, SDK validators, and tool declarations therefore require a
+coordinated upgrade. Older daemons reject unsupported trace requests through
+their existing closed decoder; a trace-aware daemon returns `unsupported_trace`
+when an involved federated host or hub cannot carry the requested control.
+Callers must not interpret either failure as enabled tracing. Upgrade every
+daemon and hub involved before requesting tracing again.
 
 #### `session.open`
 
@@ -464,9 +500,12 @@ bound forces a kill, worker EOF fails the outstanding caller exactly once; the d
 fabricates an interrupted result.
 
 After orderly close or unrequested EOF, the durable row is offline and
-resumable. `forget:true` deletes it only after the worker is stopped. There is no
-closed row state. Independent terminal auto-close uses this same Close path;
-product adapters own no archival timer.
+resumable. A later close of that offline row succeeds without launching a
+worker and leaves the row resumable. `forget:true` deletes the offline durable
+row directly; for a connected row it deletes only after the worker is stopped.
+Neither path opens or deletes product-owned native history. There is no closed
+row state. Independent terminal auto-close uses this same Close path; product
+adapters own no archival timer.
 
 ### 1.2 Edge rules
 
@@ -519,10 +558,10 @@ product adapters own no archival timer.
   child, so abrupt wrapper death cannot free the lock while a surviving child
   writes; contention is `spawn_failed` with `session busy`. A native product's
   own mechanism qualifies only when it excludes competing processes.
-- Run start/read/wait/ack, `turn.interrupt`, or `session.close` addressed to a durable row
-  without a connection returns `not_connected`. Resume is an explicit
-  `lane.spawn`; a caller kit may compose that automatically without changing the
-  wire.
+- Run start/read/wait/ack or `turn.interrupt` addressed to a durable row without
+  a connection returns `not_connected`. `session.close` instead performs the
+  offline row operation described above. Resume is an explicit `lane.spawn`; a
+  caller kit may compose that automatically without changing the wire.
 - `turn.interrupt` while no run is outstanding returns not-running. An accepted
   interrupt does not promise that the native product has already stopped.
 - Collector timeout/disappearance leaves the Worker cursor intact while the
@@ -571,6 +610,7 @@ refused state, and both workers must obey EOF and native-session exclusivity.
 | `session.superseded` | `session.superseded` | Survives unchanged so replacement is terminal rather than a reconnect flap. |
 | `peers.list` | `session.list` | Merged with lane list and status because peers and lanes are sessions. |
 | `message.send` | `message.send` | Survives as the single outbound messaging operation. |
+| — | `trace.configure` | Adds live parent-owned tracing without persistent policy or a second delivery transport. |
 | `lane.doctor` | `lane.describe` | Renamed because hello success reports support; there is no readiness state. |
 | `lane.list` | `session.list` | Merged because a lane is a session row plus an optional connection. |
 | `lane.start` | `lane.spawn` + `turn.start` | Creation and the first turn are two ordinary composable operations. |
@@ -587,7 +627,7 @@ refused state, and both workers must obey EOF and native-session exclusivity.
 | `lane.turn.interrupt` | `turn.interrupt` | Merged with the caller-side operation. |
 | `lane.session.archive` | `session.close` | Merged with the caller-side lifetime operation. |
 
-The closed method authority therefore shrinks from twenty-one methods to seventeen, including the internal worker
+The closed method authority therefore shrinks from twenty-one methods to eighteen, including the internal worker
 execute/ready pair and explicit retained-result acknowledgment.
 
 ### 1.4 Federation lifetime controls
@@ -626,7 +666,7 @@ and closes the connection without writing one.
 | `-32600` | `invalid_frame` | Any method whose envelope, closed params, or daemon-checked identity grammar is invalid, but only when a valid request ID is recoverable. This includes a composed lane name beyond 128 characters. |
 | `-32602` | `invalid_hello` | `session.hello` when its union, protocol, identity, or token is invalid. |
 | `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, run start/read/wait/ack, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
-| `-32002` | `not_connected` | Run start/read/wait/ack, `turn.interrupt`, or `session.close` when a durable row has no connection. |
+| `-32002` | `not_connected` | Run start/read/wait/ack or `turn.interrupt` when a durable row has no connection. |
 | `-32003` | `busy` | Run admission when the target already has an outstanding run or 256 retained records; out-of-order ack; a cursor read after close admission; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
 | `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run. |
 | `-32005` | `already_connected` | Resume `lane.spawn` when the durable row already has its worker connection. |
@@ -639,6 +679,7 @@ and closes the connection without writing one.
 | `-32013` | `name_taken` | New `lane.spawn` when another row on that host already holds the requested composed name. |
 | `-32014` | `unknown_host` | `lane.describe` or new `lane.spawn` naming an unfederated `host`, or any canonical identity input whose host part is neither local nor connected. |
 | `-32015` | `forward_lost` | A one-hop federated request whose transport ends before its response; the request may or may not have been applied on the target host and is never retried. |
+| `-32016` | `unsupported_trace` | `trace.configure` or `lane.spawn.trace` when an involved federated host or hub cannot carry or enforce tracing. Upgrade every involved daemon and hub before retrying. |
 | `-32603` | `internal` | The daemon's own shutdown or durable row-file operation fails; `data` carries its error text. An explicit uncertain-delivery callback may also use this code; it never certifies native refusal. |
 
 ### 3.1 Product contract

@@ -17,7 +17,8 @@ func TestCallerWireActions(t *testing.T) {
 	}{
 		{"list", "session.list", `{}`, `{"sessions":[]}`, SessionListRequest{}},
 		{"send", "message.send", `{"target":"lane","message":"hi"}`, `{"message_id":"m","deliveries":[]}`, MessageSendRequest{Target: "lane", Message: "hi"}},
-		{"spawn", "lane.spawn", `{"name":"child","product":"example-peer","open":{}}`, `{"session_id":"child@local"}`, LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}}},
+		{"spawn", "lane.spawn", `{"name":"child","product":"example-peer","open":{},"trace":"events"}`, `{"session_id":"child@local"}`, LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}, Trace: "events"}},
+		{"trace", "trace.configure", `{"session_id":"child@local","mode":"content"}`, `{"session_id":"child@local","mode":"content"}`, TraceConfigureRequest{SessionID: "child@local", Mode: "content"}},
 		{"describe", "lane.describe", `{"product":"example-peer"}`, `{"product":"example-peer","supported_open_fields":[],"extra_arguments":[]}`, LaneDescribeRequest{Product: "example-peer"}},
 		{"run", "turn.run", `{"session_id":"child@local","input":"hi"}`, `{"session_id":"child@local","run_id":"g/1","state":"done","result":{"outcome":"completed","result":"hi"}}`, TurnRunRequest{SessionID: "child@local", Input: "hi"}},
 		{"interrupt", "turn.interrupt", `{"session_id":"child@local"}`, `{}`, SessionTarget{SessionID: "child@local"}},
@@ -89,6 +90,7 @@ func TestCallerActionRejectsInvalidInput(t *testing.T) {
 	}{
 		{"unknown action", "unknown", `{}`},
 		{"wire shape", "list", `{"extra":true}`},
+		{"trace mode", "trace", `{"session_id":"lane@local","mode":"all"}`},
 		{"local shape", "status", `{"turn_id":"t-1","extra":true}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -97,7 +99,7 @@ func TestCallerActionRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
-	if !reflect.DeepEqual(Actions, []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}) {
+	if !reflect.DeepEqual(Actions, []string{"list", "send", "spawn", "describe", "trace", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}) {
 		t.Fatalf("actions = %v", Actions)
 	}
 }

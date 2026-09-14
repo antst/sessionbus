@@ -93,3 +93,26 @@ func TestProductsEnvironmentAndFlagPrecedence(t *testing.T) {
 		t.Fatalf("empty environment: %v, %v", c.Products, err)
 	}
 }
+
+func TestCommunicationLogConfiguration(t *testing.T) {
+	t.Setenv("SESSIONBUS_HUB", "")
+	t.Setenv("SESSIONBUS_COMMS_LOG", "")
+	t.Setenv("SESSIONBUS_COMMS_LOG_DIR", "")
+	c, err := parse(nil)
+	if err != nil || c.CommsLog.Mode != "off" {
+		t.Fatalf("default: %v %v", c.CommsLog.Mode, err)
+	}
+	t.Setenv("SESSIONBUS_COMMS_LOG", "content")
+	t.Setenv("SESSIONBUS_COMMS_LOG_DIR", filepath.Join(t.TempDir(), "private"))
+	c, err = parse(nil)
+	if err != nil || c.CommsLog.Mode != "content" || c.CommsLog.Path != filepath.Join(os.Getenv("SESSIONBUS_COMMS_LOG_DIR"), "sessionbus.jsonl") || c.CommsLog.MaxFileBytes != 16<<20 || c.CommsLog.MaxFiles != 4 {
+		t.Fatalf("configured: %#v %v", c.CommsLog, err)
+	}
+	c, err = parse([]string{"-comms-log", "metadata", "-comms-log-sessions", "one@host,two@host", "-comms-log-groups", "team"})
+	if err != nil || c.CommsLog.Mode != "metadata" || len(c.CommsLog.Sessions) != 2 || len(c.CommsLog.Groups) != 1 {
+		t.Fatalf("override: %#v %v", c.CommsLog, err)
+	}
+	if _, err = parse([]string{"-comms-log", "typo"}); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+}
