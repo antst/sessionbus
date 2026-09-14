@@ -31,6 +31,7 @@ var methodCodecs = map[string]methodCodec{
 	"message.deliver":    {"MessageDeliverRequest", "MessageDeliverResult", newValue[DeliveryRequest], newValue[DeliveryReceipt], false, true},
 	"lane.describe":      {"LaneDescribeRequest", "LaneDescribeResult", newValue[LaneDescribeRequest], newValue[LaneDescribeResult], true, false},
 	"lane.spawn":         {"LaneSpawnRequest", "LaneSpawnResult", newValue[LaneSpawnRequest], newValue[LaneSpawnResult], true, false},
+	"trace.configure":    {"TraceConfigureRequest", "TraceConfigureResult", newValue[TraceConfigureRequest], newValue[TraceConfigureResult], true, false},
 	"session.open":       {"SessionOpenRequest", "SessionOpenResult", newValue[OpenRequest], newValue[OpenResult], false, true},
 	"turn.run":           {"TurnRunRequest", "RunStatus", newValue[TurnRunRequest], newValue[RunStatus], true, false},
 	"turn.start":         {"TurnRunRequest", "RunRef", newValue[TurnRunRequest], newValue[RunRef], true, false},
@@ -149,7 +150,7 @@ func DecodeError(raw []byte) (*RPCError, error) {
 	return &value, nil
 }
 
-var errorMessages = map[int]string{InvalidFrame: "invalid_frame", InvalidHello: "invalid_hello", Internal: "internal", UnknownSession: "unknown_session", NotConnected: "not_connected", Busy: "busy", NotRunning: "not_running", AlreadyConnected: "already_connected", UnknownProduct: "unknown_product", UnsupportedOpen: "unsupported_open_field", SpawnFailed: "spawn_failed", Timeout: "timeout", NotCommitted: "not_committed", Superseded: "superseded", NameTaken: "name_taken", UnknownHost: "unknown_host", ForwardLost: "forward_lost"}
+var errorMessages = map[int]string{InvalidFrame: "invalid_frame", InvalidHello: "invalid_hello", Internal: "internal", UnknownSession: "unknown_session", NotConnected: "not_connected", Busy: "busy", NotRunning: "not_running", AlreadyConnected: "already_connected", UnknownProduct: "unknown_product", UnsupportedOpen: "unsupported_open_field", SpawnFailed: "spawn_failed", Timeout: "timeout", NotCommitted: "not_committed", Superseded: "superseded", NameTaken: "name_taken", UnknownHost: "unknown_host", ForwardLost: "forward_lost", UnsupportedTrace: "unsupported_trace"}
 
 type schemaNode map[string]any
 

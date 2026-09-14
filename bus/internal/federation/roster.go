@@ -22,7 +22,16 @@ type outgoingRoster struct{ reply chan Reply }
 // An old hub/host negotiates no ALPN and must never receive the new method.
 func SupportsRoster(fd net.Conn) bool {
 	connection, ok := fd.(*tls.Conn)
-	return ok && connection.ConnectionState().NegotiatedProtocol == RosterALPN
+	if !ok {
+		return false
+	}
+	protocol := connection.ConnectionState().NegotiatedProtocol
+	return protocol == TraceALPN || protocol == RosterALPN
+}
+
+func SupportsTrace(fd net.Conn) bool {
+	connection, ok := fd.(*tls.Conn)
+	return ok && connection.ConnectionState().NegotiatedProtocol == TraceALPN
 }
 
 func IsRoster(call IncomingCall) bool { return call.Request.Method == rosterMethod }
@@ -46,7 +55,7 @@ func (s *hubState) roster(ctx context.Context, inbox chan<- registryEvent, origi
 	select {
 	case origin.rosterSlots <- struct{}{}:
 	default:
-		s.reply(originReply{origin, id, errorReply(protocol.ForwardLost, nil)})
+		s.reply(originReply{origin: origin, id: id, value: errorReply(protocol.ForwardLost, nil)})
 		return
 	}
 	names := []string{}
@@ -58,7 +67,7 @@ func (s *hubState) roster(ctx context.Context, inbox chan<- registryEvent, origi
 	sort.Strings(names)
 	if len(names) > roster.MaxRows {
 		<-origin.rosterSlots
-		s.reply(originReply{origin, id, errorReply(protocol.ForwardLost, nil)})
+		s.reply(originReply{origin: origin, id: id, value: errorReply(protocol.ForwardLost, nil)})
 		return
 	}
 	type leg struct {
@@ -103,7 +112,7 @@ func (s *hubState) roster(ctx context.Context, inbox chan<- registryEvent, origi
 			encoded, err := roster.Encode(host)
 			retainedBytes += len(encoded) + 1
 			if err != nil || retainedBytes > roster.MaxBytes-1024 {
-				postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin, id, errorReply(protocol.ForwardLost, "roster_too_large")}})
+				postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin: origin, id: id, value: errorReply(protocol.ForwardLost, "roster_too_large")}})
 				return
 			}
 			result.Hosts = append(result.Hosts, host)
@@ -113,6 +122,6 @@ func (s *hubState) roster(ctx context.Context, inbox chan<- registryEvent, origi
 		if err != nil {
 			value = errorReply(protocol.ForwardLost, nil)
 		}
-		postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin, id, value}})
+		postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin: origin, id: id, value: value}})
 	}()
 }

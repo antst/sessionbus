@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/antst/sessionbus/bus/internal/commslog"
+	"github.com/antst/sessionbus/bus/internal/federation"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
@@ -17,6 +18,7 @@ const defaultAutoCloseMS int64 = 60000
 // ownership is a caller lifetime, not a transport request or worker claimant.
 // All fields are protected by directory.mu. Same-ID replacement keeps this token.
 type ownership struct {
+	caller                      federation.Caller
 	id, token, host, attachment string
 	ended                       bool
 	destinations                map[string]bool
@@ -98,6 +100,9 @@ func (d *directory) endOwner(owner *ownership) {
 	}
 	owner.ended = true
 	for _, item := range d.entries {
+		if item.parent == owner {
+			item.traceMode, item.traceVersion = "", ""
+		}
 		if item.parent == owner && item.row.Policy != nil && !item.row.Policy.Persistent && item.attachment != nil {
 			if !item.attachment.wire.Post(ownerEndEvent{owner}) {
 				item.attachment.wire.Close()
@@ -123,6 +128,7 @@ func (s *session) setDeadline(at time.Time) {
 	s.autoClose, s.stopAuto = s.daemon.config.policyTimer(at.Sub(s.daemon.config.now()))
 }
 func (s *session) reserveRun() string {
+	s.runFromTrace = false
 	s.previousDeadline = s.deadline
 	s.setDeadline(time.Time{})
 	if s.runGeneration == "" {
@@ -137,6 +143,7 @@ func (s *session) refuseRun(id string) {
 		return
 	}
 	s.runID = ""
+	s.runFromTrace = false
 	s.runSequence-- // Only a refused, not-yet-admitted reservation can be reused.
 	s.daemon.directory.finishRun(s.identity, s)
 	s.setDeadline(s.previousDeadline)
@@ -166,6 +173,8 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 	}
 	s.logRun(commslog.TurnReady, value.RunID, commslog.Settled, value.Outcome)
 	s.runID = ""
+	fromTrace := s.runFromTrace
+	s.runFromTrace = false
 	s.daemon.directory.finishRun(s.identity, s)
 	policy := s.identity.row.Policy
 	if value.State == "done" && policy.AutoCloseMS > 0 && s.closeCall == nil {
@@ -181,7 +190,9 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 		}
 		if target != "" {
 			body := fmt.Sprintf("Lane %s run %s is %s. Collect with the public wait action (session_id=%s, run_id=%s), then use the public ack action after collecting.", value.SessionID, value.RunID, value.State, value.SessionID, value.RunID)
-			wait := s.daemon.directory.forwardLocal(s.federationCaller(), s.identity, "message.send", &protocol.MessageSendRequest{Target: target, Message: body}, "")
+			// A trace-triggered Run keeps its normal completion pointer, but the
+			// pointer is not a new trace source. Remote legs never emit copies.
+			wait := s.daemon.directory.forwardLocalTrace(s.federationCaller(), s.identity, "message.send", &protocol.MessageSendRequest{Target: target, Message: body}, "", !fromTrace, nil)
 			s.owned++
 			go func() { _, _ = wait(s.identity.done); s.inbox <- replyEvent{} }()
 		}

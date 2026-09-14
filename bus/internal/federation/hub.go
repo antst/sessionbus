@@ -93,9 +93,11 @@ type incomingForward struct {
 }
 
 type originReply struct {
-	origin *hostLink
-	id     int64
-	value  Reply
+	origin      *hostLink
+	destination *hostLink
+	id          int64
+	value       Reply
+	collect     bool
 }
 
 func StartHub(listener net.Listener, configuration *tls.Config, stderr io.Writer) *Hub {
@@ -201,7 +203,7 @@ func (s *hubState) handle(ctx context.Context, inbox chan<- registryEvent, event
 			}
 			sort.Strings(hosts)
 			raw, _ := json.Marshal(hostsResult{Hosts: hosts})
-			s.reply(originReply{event.link, event.id, Reply{Result: raw}})
+			s.reply(originReply{origin: event.link, id: event.id, value: Reply{Result: raw}})
 		}
 	case registryRoster:
 		s.roster(ctx, inbox, event.link, event.id)
@@ -288,7 +290,7 @@ func (l *hostLink) run(accepted bool) {
 					event.reply <- errorReply(protocol.ForwardLost, nil)
 					continue
 				}
-				pending[nextID] = pendingCall{rosterMethod, event.reply}
+				pending[nextID] = pendingCall{method: rosterMethod, reply: event.reply}
 			case lifetimeCall:
 				if failed || len(pending) >= maxPendingForwardedPerHost {
 					event.Reply <- errorReply(protocol.ForwardLost, nil)
@@ -304,8 +306,17 @@ func (l *hostLink) run(accepted bool) {
 					failed = true
 					continue
 				}
-				pending[nextID] = pendingCall{event.Method, event.Reply}
+				pending[nextID] = pendingCall{method: event.Method, reply: event.Reply}
 			case outgoingForward:
+				request := event.value.Request
+				if requestRequiresTrace(request) && !SupportsTrace(l.fd) {
+					event.reply <- traceUnsupported()
+					continue
+				}
+				if request.Trace && !SupportsTrace(l.fd) {
+					request.Trace = false
+					event.value.Request = request
+				}
 				if failed || len(pending) >= maxPendingForwardedPerHost {
 					event.reply <- errorReply(protocol.ForwardLost, nil)
 					if len(pending) >= maxPendingForwardedPerHost {
@@ -315,8 +326,10 @@ func (l *hostLink) run(accepted bool) {
 					continue
 				}
 				nextID++
-				body, err := requestBytes(nextID, forwardMethod, event.value)
-				if err != nil {
+				body, forwarded, err := forwardRequestBytes(nextID, event.value)
+				event.value, request = forwarded, forwarded.Request
+				target, targetErr := targetHost(request)
+				if targetErr != nil || err != nil {
 					event.reply <- errorReply(protocol.InvalidFrame, "forwarded request exceeds the frame limit")
 					continue
 				}
@@ -325,9 +338,9 @@ func (l *hostLink) run(accepted bool) {
 					failed = true
 					continue
 				}
-				pending[nextID] = pendingCall{event.value.Request.Method, event.reply}
+				pending[nextID] = pendingCall{method: request.Method, reply: event.reply, trace: request.Trace, target: target}
 			case originReply:
-				body, err := ResponseBytes(event.id, event.value)
+				body, err := responseBytes(event.id, event.value, true)
 				if !failed && (err != nil || !l.wire.Send(body)) {
 					failed = true
 					l.wire.Close()
@@ -381,11 +394,15 @@ func (l *hostLink) frame(event conn.Frame, pending map[int64]pendingCall, lastIn
 	}
 	if !frame.Request {
 		call, ok := pending[frame.ID]
-		if !ok || !validReply(call.method, frame) {
+		if !ok {
+			return errFrame
+		}
+		reply, valid := decodePendingReply(call, frame)
+		if !valid {
 			return errFrame
 		}
 		delete(pending, frame.ID)
-		call.reply <- Reply{Result: frame.Result, Error: frame.Error, ErrorRaw: frame.ErrorRaw}
+		call.reply <- reply
 		return nil
 	}
 	if frame.ID <= *lastIn {
@@ -436,33 +453,58 @@ func settlePending(pending map[int64]pendingCall) {
 	}
 }
 
-func validReply(method string, frame protocol.Frame) bool {
+func decodePendingReply(call pendingCall, frame protocol.Frame) (Reply, bool) {
 	if frame.Error != nil {
-		return true
+		return Reply{Error: frame.Error, ErrorRaw: append(json.RawMessage(nil), frame.ErrorRaw...)}, true
 	}
-	if method == ownerEndMethod || method == hostEndMethod {
-		return validControlReply(frame)
+	if call.trace {
+		value, err := decodeTraceReply(call.method, frame.Result, call.target)
+		if err == nil {
+			return value, true
+		}
+		if _, plainErr := protocol.DecodeResult(call.method, frame.Result); plainErr == nil {
+			return Reply{Result: append(json.RawMessage(nil), frame.Result...), Trace: []TraceRecipient{}}, true
+		}
+		return Reply{}, false
 	}
-	if method == rosterMethod {
+	if call.method == ownerEndMethod || call.method == hostEndMethod {
+		return Reply{Result: append(json.RawMessage(nil), frame.Result...)}, validControlReply(frame)
+	}
+	if call.method == rosterMethod {
 		_, err := decodeRosterReply(frame.Result)
-		return err == nil
+		return Reply{Result: append(json.RawMessage(nil), frame.Result...)}, err == nil
 	}
-	if method == hostsMethod {
+	if call.method == hostsMethod {
 		_, err := DecodeHosts(Reply{Result: frame.Result})
-		return err == nil
+		return Reply{Result: append(json.RawMessage(nil), frame.Result...)}, err == nil
 	}
-	_, err := protocol.DecodeResult(method, frame.Result)
-	return err == nil
+	_, err := protocol.DecodeResult(call.method, frame.Result)
+	return Reply{Result: append(json.RawMessage(nil), frame.Result...)}, err == nil
 }
 
 func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, origin *hostLink, call incomingForward) {
 	if s.links[origin.host] != origin {
 		return
 	}
+	if requestRequiresTrace(call.value.Request) && !SupportsTrace(origin.fd) {
+		s.reply(originReply{origin: origin, id: call.id, value: traceUnsupported()})
+		return
+	}
+	if call.value.Request.Trace && !SupportsTrace(origin.fd) {
+		call.value.Request.Trace = false
+	}
 	destination := s.links[call.host]
 	if destination == nil {
-		s.reply(originReply{origin, call.id, errorReply(protocol.UnknownHost, nil)})
+		s.reply(originReply{origin: origin, id: call.id, value: errorReply(protocol.UnknownHost, nil)})
 		return
+	}
+	if requestRequiresTrace(call.value.Request) && !SupportsTrace(destination.fd) {
+		s.reply(originReply{origin: origin, id: call.id, value: traceUnsupported()})
+		return
+	}
+	collect := call.value.Request.Trace && SupportsTrace(origin.fd)
+	if collect && !SupportsTrace(destination.fd) {
+		call.value.Request.Trace = false
 	}
 	call.value.From.SourceAttachment = origin.attachment
 	reply := make(chan Reply, 1)
@@ -475,7 +517,7 @@ func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, orig
 		defer s.group.Done()
 		select {
 		case value := <-reply:
-			postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin, call.id, value}})
+			postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin: origin, destination: destination, id: call.id, value: value, collect: collect}})
 		case <-origin.done:
 		case <-ctx.Done():
 		}
@@ -483,9 +525,38 @@ func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, orig
 }
 
 func (s *hubState) reply(event originReply) {
+	if event.collect {
+		if event.value.Trace == nil {
+			event.value.Trace = []TraceRecipient{}
+		} else {
+			event.value.Trace = s.liveTraceRecipients(event.destination, event.value.Trace)
+		}
+	}
 	if s.links[event.origin.host] != event.origin || !event.origin.wire.Post(event) {
 		s.remove(event.origin)
 	}
+}
+
+func (s *hubState) liveTraceRecipients(destination *hostLink, values []TraceRecipient) []TraceRecipient {
+	if destination == nil || s.links[destination.host] != destination {
+		return []TraceRecipient{}
+	}
+	result := make([]TraceRecipient, 0, len(values))
+	for _, value := range values {
+		ownerHost, err := suffix(value.Owner.SessionID)
+		if err != nil {
+			continue
+		}
+		if ownerHost != destination.host {
+			owner := s.links[ownerHost]
+			if owner == nil || owner.attachment != value.Owner.SourceAttachment {
+				continue
+			}
+		}
+		value.Owner.Groups = append([]string(nil), value.Owner.Groups...)
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *hubState) remove(link *hostLink) {
@@ -506,14 +577,14 @@ func (s *hubState) ownerEnd(ctx context.Context, inbox chan<- registryEvent, ori
 	}
 	destination := s.links[call.Value.Host]
 	if destination == nil {
-		s.reply(originReply{origin, call.ID, errorReply(protocol.UnknownHost, nil)})
+		s.reply(originReply{origin: origin, id: call.ID, value: errorReply(protocol.UnknownHost, nil)})
 		return
 	}
 	call.Value.Source, call.Value.Attachment = origin.host, origin.attachment
 	reply := make(chan Reply, 1)
 	if !destination.wire.Post(lifetimeCall{ownerEndMethod, call.Value, reply}) {
 		s.remove(destination)
-		s.reply(originReply{origin, call.ID, errorReply(protocol.ForwardLost, nil)})
+		s.reply(originReply{origin: origin, id: call.ID, value: errorReply(protocol.ForwardLost, nil)})
 		return
 	}
 	s.group.Add(1)
@@ -521,7 +592,7 @@ func (s *hubState) ownerEnd(ctx context.Context, inbox chan<- registryEvent, ori
 		defer s.group.Done()
 		select {
 		case value := <-reply:
-			postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin, call.ID, value}})
+			postRegistry(ctx, inbox, registryEvent{kind: registryReply, reply: &originReply{origin: origin, destination: destination, id: call.ID, value: value}})
 		case <-origin.done:
 		case <-ctx.Done():
 		}

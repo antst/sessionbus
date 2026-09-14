@@ -29,13 +29,14 @@ func TestCallerMapsWireMethods(t *testing.T) {
 			params any
 		}{method, params})
 		results := map[string]any{
-			"session.list":   SessionListResult{Sessions: []SessionSummary{}},
-			"message.send":   MessageSendResult{MessageID: "message", Deliveries: []protocol.MessageSendDelivery{}},
-			"lane.describe":  LaneDescribeResult{Product: "example-peer", SupportedOpenFields: []string{}, ExtraArguments: []ExtraArgument{}},
-			"lane.spawn":     LaneSpawnResult{SessionID: "lane@local"},
-			"turn.run":       RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &TurnResult{Outcome: "completed", Result: "done"}},
-			"turn.interrupt": struct{}{},
-			"session.close":  struct{}{},
+			"session.list":    SessionListResult{Sessions: []SessionSummary{}},
+			"message.send":    MessageSendResult{MessageID: "message", Deliveries: []protocol.MessageSendDelivery{}},
+			"lane.describe":   LaneDescribeResult{Product: "example-peer", SupportedOpenFields: []string{}, ExtraArguments: []ExtraArgument{}},
+			"lane.spawn":      LaneSpawnResult{SessionID: "lane@local"},
+			"trace.configure": TraceConfigureResult{SessionID: "lane@local", Mode: "events"},
+			"turn.run":        RunStatus{SessionID: "lane@local", RunID: "g/1", State: "done", Result: &TurnResult{Outcome: "completed", Result: "done"}},
+			"turn.interrupt":  struct{}{},
+			"session.close":   struct{}{},
 		}
 		raw, _ := json.Marshal(results[method])
 		return json.Unmarshal(raw, result)
@@ -50,11 +51,15 @@ func TestCallerMapsWireMethods(t *testing.T) {
 		{"session.list", SessionListRequest{}, func() error { _, err := c.List(ctx, SessionListRequest{}); return err }},
 		{"message.send", MessageSendRequest{Target: "lane", Message: "hello"}, func() error { _, err := c.Send(ctx, MessageSendRequest{Target: "lane", Message: "hello"}); return err }},
 		{"lane.describe", LaneDescribeRequest{Product: "example-peer"}, func() error { _, err := c.Describe(ctx, LaneDescribeRequest{Product: "example-peer"}); return err }},
-		{"lane.spawn", LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}}, func() error {
-			_, err := c.Spawn(ctx, LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}})
+		{"lane.spawn", LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}, Trace: "content"}, func() error {
+			_, err := c.Spawn(ctx, LaneSpawnRequest{Name: "child", Product: "example-peer", Open: &OpenOptions{}, Trace: "content"})
 			return err
 		}},
 		{"lane.spawn", LaneSpawnRequest{ResumeSessionID: "lane@local"}, func() error { _, err := c.Resume(ctx, "lane@local"); return err }},
+		{"trace.configure", TraceConfigureRequest{SessionID: "lane@local", Mode: "events"}, func() error {
+			_, err := c.Trace(ctx, TraceConfigureRequest{SessionID: "lane@local", Mode: "events"})
+			return err
+		}},
 		{"turn.run", TurnRunRequest{SessionID: "lane@local", Input: "work"}, func() error { _, err := c.Run(ctx, TurnRunRequest{SessionID: "lane@local", Input: "work"}); return err }},
 		{"turn.interrupt", SessionTarget{SessionID: "lane@local"}, func() error { return c.Interrupt(ctx, SessionTarget{SessionID: "lane@local"}) }},
 		{"session.close", SessionCloseRequest{SessionID: "lane@local", Forget: true}, func() error { return c.Close(ctx, SessionCloseRequest{SessionID: "lane@local", Forget: true}) }},

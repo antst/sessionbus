@@ -115,14 +115,14 @@ func validateClosedFixture(definition string, raw []byte) error {
 	params := map[string]string{
 		"SessionHelloRequest": "session.hello", "SessionSupersededRequest": "session.superseded", "SessionListRequest": "session.list",
 		"MessageSendRequest": "message.send", "MessageDeliverRequest": "message.deliver", "LaneDescribeRequest": "lane.describe",
-		"LaneSpawnRequest": "lane.spawn", "SessionOpenRequest": "session.open", "TurnRunRequest": "turn.run",
+		"LaneSpawnRequest": "lane.spawn", "TraceConfigureRequest": "trace.configure", "SessionOpenRequest": "session.open", "TurnRunRequest": "turn.run",
 		"TurnInterruptRequest": "turn.interrupt", "SessionCloseRequest": "session.close",
 		"RunRef": "turn.ack", "ReadRequest": "turn.status", "WaitRequest": "turn.wait", "ExecuteRequest": "turn.execute", "TurnReady": "turn.ready",
 	}
 	results := map[string]string{
 		"SessionHelloResult": "session.hello", "SessionSupersededResult": "session.superseded", "SessionListResult": "session.list",
 		"MessageSendResult": "message.send", "MessageDeliverResult": "message.deliver", "DeliveryReceipt": "message.deliver",
-		"LaneDescribeResult": "lane.describe", "LaneSpawnResult": "lane.spawn", "SessionOpenResult": "session.open",
+		"LaneDescribeResult": "lane.describe", "LaneSpawnResult": "lane.spawn", "TraceConfigureResult": "trace.configure", "SessionOpenResult": "session.open",
 		"RunStatus": "turn.run", "TurnInterruptResult": "turn.interrupt", "SessionCloseResult": "session.close",
 	}
 	if method := params[definition]; method != "" {
@@ -190,7 +190,7 @@ func TestSchemaDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"DeliveryReceipt", "DeliverySource", "ExtraArgument", "HostProducts", "LaneDescribeRequest", "LaneDescribeResult", "LaneSpawnRequest", "LaneSpawnResult", "MessageDeliverRequest", "MessageDeliverResult", "MessageSendDelivery", "MessageSendRequest", "MessageSendResult", "RPCError", "RPCErrorResponse", "SessionCloseRequest", "SessionCloseResult", "SessionHelloRequest", "SessionHelloResult", "SessionListRequest", "SessionListResult", "SessionOpenOptions", "SessionOpenRequest", "SessionOpenResult", "SessionSummary", "SessionSupersededRequest", "SessionSupersededResult", "SpawnFailedData", "TurnInterruptRequest", "TurnInterruptResult", "TurnRunRequest", "TurnRunResult"}
-	want = append(want, "ExecuteRequest", "LanePolicy", "ReadRequest", "RunRef", "RunStatus", "TurnReady", "WaitRequest", "SessionSelfInfo")
+	want = append(want, "ExecuteRequest", "LanePolicy", "ReadRequest", "RunRef", "RunStatus", "TurnReady", "WaitRequest", "SessionSelfInfo", "TraceConfigureRequest", "TraceConfigureResult")
 	slicesSort(want)
 	got := make([]string, 0, len(root.Definitions))
 	for name := range root.Definitions {

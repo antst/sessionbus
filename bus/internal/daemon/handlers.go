@@ -38,6 +38,7 @@ func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 				messageID = randomID("message")
 			}
 		}
+		s.beginTrace(frame, params, messageID)
 		s.logRequest(frame, params, messageID)
 		s.error(frame, protocol.Busy, nil)
 		return
@@ -52,6 +53,8 @@ func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 		s.send(frame, params.(*protocol.MessageSendRequest))
 	case "lane.describe":
 		s.describe(frame, params.(*protocol.LaneDescribeRequest))
+	case "trace.configure":
+		s.configureTrace(frame, params.(*protocol.TraceConfigureRequest))
 	case "lane.spawn":
 		s.spawn(frame, params.(*protocol.LaneSpawnRequest))
 	case "turn.run", "turn.start":
@@ -282,10 +285,15 @@ func (s *session) launchRequest(frame protocol.Frame, start *launch) {
 
 func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest) {
 	caller := s.federationCaller()
+	if !s.validTraceCopy(input) {
+		s.error(frame, protocol.NotConnected, nil)
+		return
+	}
 	messageID := s.messageID
 	if messageID == "" {
 		messageID = randomID("message")
 	}
+	s.beginTrace(frame, input, messageID)
 	s.logRequest(frame, input, messageID)
 	if s.sendFederated(frame, input, messageID) {
 		return
@@ -326,8 +334,12 @@ func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest)
 		if item == nil {
 			continue
 		}
+		s.traceTarget(frame.ID, item, state.deliveries[index].Target)
 		reply := make(chan answer, 1)
-		request := routedRequest{method: "message.deliver", params: deliveryRequest, reply: reply}
+		request := routedRequest{traceCopy: s.traceCopy != nil, method: "message.deliver", params: deliveryRequest, reply: reply}
+		if s.traceCopy != nil {
+			request.traceLifetime = s.traceCopy.Lifetime
+		}
 		code := s.daemon.directory.route(item, request.method, request)
 		if code != 0 {
 			state.deliveries[index].Disposition = "rejected"
@@ -388,6 +400,7 @@ func (s *session) consumeReply(event replyEvent) {
 func (s *session) finishRequest(id int64, state *requestState, result answer) {
 	delete(s.requests, id)
 	s.logResult(state.frame, result.value, result.code)
+	s.finishTrace(state.frame, result.value, result.code, result.trace)
 	if result.code == 0 && state.selfInfo != nil {
 		// A directed remote list must identify our captured caller, even when
 		// an older destination omits self_info or reports a different identity.

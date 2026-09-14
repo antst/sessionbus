@@ -30,6 +30,12 @@ type Config struct {
 }
 
 type Daemon struct {
+	traceContext     context.Context
+	traceCancel      context.CancelFunc
+	traceSource      string
+	traceBytes       int
+	traceCount       int
+	traceDropped     uint64
 	comms            *commslog.Logger
 	config           Config
 	host             string
@@ -111,6 +117,8 @@ func Start(config Config) (*Daemon, error) {
 	}
 	d := &Daemon{comms: logger, config: config, host: config.Host, table: store, listener: listener,
 		shutdown: make(chan struct{}), done: make(chan struct{}), acceptDone: make(chan struct{})}
+	d.traceContext, d.traceCancel = context.WithCancel(context.Background())
+	d.traceSource = randomID("trace") + "@" + d.host
 	d.directory = newDirectory(d, rows)
 	if err = d.startOperator(); err != nil {
 		_ = listener.Close()
@@ -171,6 +179,9 @@ func (d *Daemon) Close() error {
 		return nil
 	}
 	d.directory.closing = true
+	if d.traceCancel != nil {
+		d.traceCancel()
+	}
 	if d.federationCancel != nil {
 		d.federationCancel()
 	}

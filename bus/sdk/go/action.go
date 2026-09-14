@@ -10,12 +10,13 @@ import (
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
-var Actions = []string{"list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}
+var Actions = []string{"list", "send", "spawn", "describe", "trace", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"}
 
 func (c *Caller) Action(ctx context.Context, action string, args json.RawMessage) (json.RawMessage, error) {
 	method := map[string]string{
 		"list": "session.list", "send": "message.send", "spawn": "lane.spawn", "describe": "lane.describe",
-		"run": "turn.run", "start": "turn.start", "status": "turn.status", "wait": "turn.wait", "interrupt": "turn.interrupt", "close": "session.close",
+		"trace": "trace.configure",
+		"run":   "turn.run", "start": "turn.start", "status": "turn.status", "wait": "turn.wait", "interrupt": "turn.interrupt", "close": "session.close",
 	}[action]
 	if method != "" {
 		params, err := protocol.DecodeParams(method, args)

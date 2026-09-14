@@ -36,11 +36,14 @@ type daemonReply struct {
 type pendingCall struct {
 	method string
 	reply  chan Reply
+	trace  bool
+	target string
 }
 
 func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), stderr io.Writer, lifetime ...func(LifetimeEvent)) error {
 	var group, helpers sync.WaitGroup
 	wire := conn.Start(fd, inbox, &group)
+	traceCapable := SupportsTrace(fd)
 	nextID, lastIn := int64(0), int64(0)
 	pending := map[int64]pendingCall{}
 	stopping := ctx.Done()
@@ -70,23 +73,34 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 					wire.Close()
 					continue
 				}
-				pending[nextID] = pendingCall{ownerEndMethod, event.Reply}
+				pending[nextID] = pendingCall{method: ownerEndMethod, reply: event.Reply}
 			case OutgoingCall:
+				request := event.Value.Request
+				if requestRequiresTrace(request) && !traceCapable {
+					event.Reply <- traceUnsupported()
+					continue
+				}
+				if request.Trace && !traceCapable {
+					request.Trace = false
+					event.Value.Request = request
+				}
 				nextID++
-				body, err := requestBytes(nextID, forwardMethod, event.Value)
-				if cause != nil || err != nil || !wire.Send(body) {
+				body, forwarded, err := forwardRequestBytes(nextID, event.Value)
+				event.Value, request = forwarded, forwarded.Request
+				target, targetErr := targetHost(request)
+				if cause != nil || targetErr != nil || err != nil || !wire.Send(body) {
 					code, data := protocol.ForwardLost, any(nil)
-					if err != nil {
+					if targetErr != nil || err != nil {
 						code, data = protocol.InvalidFrame, "forwarded request exceeds the frame limit"
 					}
 					event.Reply <- errorReply(code, data)
-					if err == nil {
+					if targetErr == nil && err == nil {
 						wire.Close()
 						cause = errFrame
 					}
 					continue
 				}
-				pending[nextID] = pendingCall{event.Value.Request.Method, event.Reply}
+				pending[nextID] = pendingCall{method: request.Method, reply: event.Reply, trace: request.Trace, target: target}
 			case RosterCall:
 				nextID++
 				body, err := requestBytes(nextID, rosterMethod, struct{}{})
@@ -94,7 +108,7 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 					event.Reply <- errorReply(protocol.ForwardLost, nil)
 					continue
 				}
-				pending[nextID] = pendingCall{rosterMethod, event.Reply}
+				pending[nextID] = pendingCall{method: rosterMethod, reply: event.Reply}
 			case HostsCall:
 				nextID++
 				body, err := requestBytes(nextID, hostsMethod, struct{}{})
@@ -104,16 +118,16 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 					cause = errFrame
 					continue
 				}
-				pending[nextID] = pendingCall{hostsMethod, event.Reply}
+				pending[nextID] = pendingCall{method: hostsMethod, reply: event.Reply}
 			case daemonReply:
-				body, err := ResponseBytes(event.id, event.value)
+				body, err := responseBytes(event.id, event.value, true)
 				if cause == nil && (err != nil || !wire.Send(body)) {
 					cause = errFrame
 					wire.Close()
 				}
 			case conn.Frame:
 				if cause == nil {
-					cause = daemonFrame(host, event, pending, wire, inbox, admit, &helpers, &lastIn, lifetime)
+					cause = daemonFrame(host, traceCapable, event, pending, wire, inbox, admit, &helpers, &lastIn, lifetime)
 					if cause != nil {
 						fmt.Fprintln(stderr, cause)
 						wire.Close()
@@ -130,18 +144,22 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 	}
 }
 
-func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64, lifetime []func(LifetimeEvent)) error {
+func daemonFrame(host string, traceCapable bool, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64, lifetime []func(LifetimeEvent)) error {
 	frame := event.Value
 	if event.Err != nil {
 		return event.Err
 	}
 	if !frame.Request {
 		call, ok := pending[frame.ID]
-		if !ok || !validReply(call.method, frame) {
+		if !ok {
+			return errFrame
+		}
+		reply, valid := decodePendingReply(call, frame)
+		if !valid {
 			return errFrame
 		}
 		delete(pending, frame.ID)
-		call.reply <- Reply{Result: frame.Result, Error: frame.Error, ErrorRaw: frame.ErrorRaw}
+		call.reply <- reply
 		return nil
 	}
 	if frame.ID <= *lastIn {
@@ -203,6 +221,16 @@ func daemonFrame(host string, event conn.Frame, pending map[int64]pendingCall, w
 	value, target, err := decodeForward(frame.Params, source)
 	if err != nil || target != host {
 		return errFrame
+	}
+	if requestRequiresTrace(value.Request) && !traceCapable {
+		body, responseErr := responseBytes(frame.ID, traceUnsupported(), true)
+		if responseErr != nil || !wire.Send(body) {
+			return errFrame
+		}
+		return nil
+	}
+	if value.Request.Trace && !traceCapable {
+		value.Request.Trace = false
 	}
 	wait, err := admit(IncomingCall{From: value.From, Request: value.Request})
 	if err != nil {

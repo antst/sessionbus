@@ -129,7 +129,7 @@ Peer identity and groups are asserted rather than attested on the trusted local
 socket, and federation trusts the remote daemon's assertions. No peer
 credentials, signatures, or other security machinery belong in this protocol.
 
-There are seventeen methods.
+There are eighteen methods.
 
 #### `session.hello`
 
@@ -292,7 +292,8 @@ readiness object or readiness phase.
 A session sends `lane.spawn` either with a caller-chosen name leaf, product, open
 options, optional `extra_groups`, and optional `host` for a new lane, or with
 `resume_session_id` for a durable offline lane. Both forms accept the independent
-policy fields below; native open options cannot be overridden on resume. A peer's private group is
+policy fields below and optional live `trace` mode `off`, `events`, or
+`content`; native open options cannot be overridden on resume. A peer's private group is
 `session:<id@host>`. A lane's private group is `<parent private group>/<leaf>`;
 its default groups are exactly its parent's private group and that new private
 group, plus `extra_groups`. The parent's other memberships are not inherited,
@@ -356,6 +357,32 @@ attachment. Name updates preserve it; different-ID replacement or actual detach
 ends it. A subsequent reconnect cannot revive cleanup already admitted.
 Publication rechecks owner lifetime, including loss during provisional Open.
 The worker launch-token claimant and visibility groups are not lifetime owners.
+
+#### `trace.configure`
+
+A parent sends `trace.configure {session_id,mode}` with mode `off`, `events`,
+or `content` for one direct child. The result is the effective
+`{session_id,mode}` at the live observation boundary. Only the daemon-validated
+live parent relationship grants this authority; visibility, group membership,
+or a claimed session ID does not. The setting defaults to `off`, is held only
+in memory, and is neither `LanePolicy` nor durable row state. An omitted
+`lane.spawn.trace`, including on resume, selects `off`; a former parent's
+setting is never inherited.
+
+The initial `events` scope covers Sessionbus message-send and settled-delivery
+metadata. `content` additionally includes the message body. Run/lane lifecycle
+events and native prompt or result content are outside this slice. A parent copy
+uses ordinary `message.send` / `message.deliver` body delivery, with no new
+delivery fields or event transport. Copies are live and best-effort: there is no
+trace persistence, replay, catch-up, or recovery after restart.
+
+This remains protocol 1, but the method and spawn field extend closed request
+schemas. Daemon, SDK validators, and tool declarations therefore require a
+coordinated upgrade. Older daemons reject unsupported trace requests through
+their existing closed decoder; a trace-aware daemon returns `unsupported_trace`
+when an involved federated host or hub cannot carry the requested control.
+Callers must not interpret either failure as enabled tracing. Upgrade every
+daemon and hub involved before requesting tracing again.
 
 #### `session.open`
 
@@ -589,6 +616,7 @@ refused state, and both workers must obey EOF and native-session exclusivity.
 | `session.superseded` | `session.superseded` | Survives unchanged so replacement is terminal rather than a reconnect flap. |
 | `peers.list` | `session.list` | Merged with lane list and status because peers and lanes are sessions. |
 | `message.send` | `message.send` | Survives as the single outbound messaging operation. |
+| — | `trace.configure` | Adds live parent-owned tracing without persistent policy or a second delivery transport. |
 | `lane.doctor` | `lane.describe` | Renamed because hello success reports support; there is no readiness state. |
 | `lane.list` | `session.list` | Merged because a lane is a session row plus an optional connection. |
 | `lane.start` | `lane.spawn` + `turn.start` | Creation and the first turn are two ordinary composable operations. |
@@ -605,7 +633,7 @@ refused state, and both workers must obey EOF and native-session exclusivity.
 | `lane.turn.interrupt` | `turn.interrupt` | Merged with the caller-side operation. |
 | `lane.session.archive` | `session.close` | Merged with the caller-side lifetime operation. |
 
-The closed method authority therefore shrinks from twenty-one methods to seventeen, including the internal worker
+The closed method authority therefore shrinks from twenty-one methods to eighteen, including the internal worker
 execute/ready pair and explicit retained-result acknowledgment.
 
 ### 1.4 Federation lifetime controls
@@ -657,6 +685,7 @@ and closes the connection without writing one.
 | `-32013` | `name_taken` | New `lane.spawn` when another row on that host already holds the requested composed name. |
 | `-32014` | `unknown_host` | `lane.describe` or new `lane.spawn` naming an unfederated `host`, or any canonical identity input whose host part is neither local nor connected. |
 | `-32015` | `forward_lost` | A one-hop federated request whose transport ends before its response; the request may or may not have been applied on the target host and is never retried. |
+| `-32016` | `unsupported_trace` | `trace.configure` or `lane.spawn.trace` when an involved federated host or hub cannot carry or enforce tracing. Upgrade every involved daemon and hub before retrying. |
 | `-32603` | `internal` | The daemon's own shutdown or durable row-file operation fails; `data` carries its error text. An explicit uncertain-delivery callback may also use this code; it never certifies native refusal. |
 
 ## 2. Daemon
@@ -666,7 +695,7 @@ and closes the connection without writing one.
 The daemon is a router around one directory and a set of durable row files. It
 does not know how any product creates a session, runs a turn, injects a message,
 or closes. Native
-products and wrappers expose those operations through the seventeen methods in
+products and wrappers expose those operations through the eighteen methods in
 Section 1. The daemon contains no product switch, lane actor, product driver,
 product capability interface, output ledger, or product archive transaction.
 Generic lane policy owns one terminal auto-close deadline and invokes ordinary
@@ -1682,7 +1711,7 @@ not hand-maintain protocol-shaped duplicates. The worker entry is
 mode is `connectPeer(identity, deliver)`, `rehello(name, info)`, and
 `replace(ctx, identity)`. A
 connection-bound client supplies `list`, `send`, `describe`, `spawn`, `resume`,
-`run`, `interrupt`, and `close(forget)` and is usable from every callback
+`trace`, `run`, `interrupt`, and `close(forget)` and is usable from every callback
 without blocking the reader. Go also exports one thin no-hello client:
 `Dial(socket)`, `Call(ctx, method, params)`, and `Close`; the caller kit and a
 wrapper's private lane socket use that one framed implementation. `Socket()` is
@@ -1694,7 +1723,7 @@ Go exports `NewCaller(call)` to place the same typed methods and caller
 conveniences over that no-hello client's call function; workers and peers are
 the other two uses of the same caller.
 The caller kit also owns the tool action vocabulary: exported `Actions` is
-`list`, `send`, `spawn`, `describe`, `run`, `start`, `wait`, `status`,
+`list`, `send`, `spawn`, `describe`, `trace`, `run`, `start`, `wait`, `status`,
 `interrupt`, `close`, `forget`, and `ack`, and `Caller.Action(ctx, action, args)`
 decodes the wrapper/MCP JSON argument shape and dispatches to the corresponding
 typed method or caller convenience. `forget` is `close` with `forget:true`.
@@ -1934,7 +1963,7 @@ must remain net-negative after the kit is accounted separately.
 | Local encryption handoff | **Reserved in 0.5.0, not implemented:** thin peer launchers and lane wrappers must not configure local TLS. Both kits consume and scrub `SESSIONBUS_LOCAL_KEY` and reject a nonempty value before opening the daemon connection; private MCP/plugin endpoints and native children never receive it. | The implemented local boundary is the owner-checked `0700` runtime directory and `0600` Unix socket. Host-to-hub TLS remains implemented and required; private wrapper hops are not daemon connections. |
 | Wrapper-only queue and run handoff | A wrapper that lacks native append/injection owns one in-memory FIFO capped at 64 deliveries and 1 MiB total after rendering and newline separators. The wrapper host's own renderer, fixed by a golden fixture, emits the `[sessionbus-metadata: ...]` carrier line, preserves arrival order, joins rendered entries with newlines, and prepends the result before caller input. FIFO extraction, native-turn creation, and interrupt are serialized under one boundary: interrupt before native creation aborts creation and returns terminal `interrupted` without a native call; after creation it calls native cancel. `injected` is returned only when the product callback confirms an actually active native turn; otherwise the message joins the next input. At run start the host atomically swaps the FIFO; overflow is rejected as `queue_full`. Shared fixtures cover interrupt at creation, delivery racing the first turn, and delivery racing terminal completion. | One renderer and one handoff boundary prevent wrappers from changing sender metadata, losing a boundary delivery, creating an unstoppable turn, or claiming injection into a turn that did not exist. `queued_for_next_turn` remains truthful; loss with wrapper exit is the accepted loss in Section 1.2. |
 | Interactive delivery | A peer integration may let an interactive product start a turn in response to delivery and report `injected`; the wrapper FIFO rule applies only to a lane whose idle-message policy is stage. Explicit idle-message run policy permits one shared Worker seeded run. | Peer interaction is already user-owned product work; lane admission follows the independent shared policy. |
-| Caller tool surface | Every product exposes the same caller-kit start/wait/status/interrupt/spawn/describe/close/list/send operations; product plugins do not invent wire methods. | Tool presentation is kit sugar over the seventeen methods and is identical for native and wrapped products. |
+| Caller tool surface | Every product exposes the same caller-kit start/wait/status/interrupt/spawn/describe/trace/close/list/send operations; product plugins do not invent wire methods. | Tool presentation is kit sugar over the eighteen methods and is identical for native and wrapped products. |
 | Shared size cap | Wrapper host, private MCP/plugin endpoint, and bounded FIFO together: **400 production / 400 test logical lines**. | Product-independent scaffolding larger than the daemon router would be a second protocol implementation. |
 | Shared deletion | Delete the 16 shared files in `internal/launcher`, including `lane_grok_test.go` exactly once (2,199 lines), and `9f366be:cmd/agent-sessions/connector_refresh.go` plus its test (333 lines). Rewrite `connector.go`/test as the resident peer wrapper's connection, and rewrite `native_peer.go` as thin exec-time product configuration; the stdio entry is only the private action helper. | The old launcher package still dies: CLI parsing and thin peer plans move to `cmd`, product and connection ownership to wrappers, and lane recipes to wrappers. Connector self-exec/release refresh is unnecessary when the resident wrapper holds the connection. |
 
@@ -2210,7 +2239,7 @@ check.
 
 | Deleted test family | Universal owner |
 | --- | --- |
-| Daemon lane actors, registries, projections, collectors, archives, timers, product dispatch, and argv reparse | Router/table tests drive the seventeen methods over a real connection and assert rows, current admissions, pending calls, lifetime ownership, independent deadlines, and supervisor cleanup. |
+| Daemon lane actors, registries, projections, collectors, archives, timers, product dispatch, and argv reparse | Router/table tests drive the eighteen methods over a real connection and assert rows, current admissions, pending calls, lifetime ownership, independent deadlines, and supervisor cleanup. |
 | Presence, messaging, federation, roster, names, and notices | Daemon visibility/resolution tests plus the federation gate; no test constructs a private actor or product driver. |
 | Product lane drivers and peer launchers | Each Section 4 wrapper test drives its six callbacks and exact native transcript; the shared wrapper-host unit suite proves the FIFO cap of 64 deliveries / 1 MiB rendered bytes, overflow `queue_full`, stale lock files do not block, a live inherited flock survives wrapper death until the child exits, interrupt at native-turn creation, first-turn/terminal delivery handoff races, and child death with a non-empty FIFO invents no receipt while leaving the row resumable; peer exec-plan tests stop at product config and never claim socket ownership. |
 | Go/JavaScript lifecycle duplication | The one 19-row fixture table runs unchanged through both native kits and the reference worker. |
