@@ -20,6 +20,7 @@ const (
 )
 
 type answer struct {
+	trace  []federation.TraceRecipient
 	value  any
 	code   int
 	data   any
@@ -27,12 +28,14 @@ type answer struct {
 }
 
 type routedRequest struct {
-	runID       string
-	collect     bool
-	destination *entry
-	method      string
-	params      any
-	reply       chan answer
+	traceCopy     bool
+	traceLifetime string
+	runID         string
+	collect       bool
+	destination   *entry
+	method        string
+	params        any
+	reply         chan answer
 }
 
 type replyEvent struct {
@@ -44,6 +47,12 @@ type replyEvent struct {
 type supersedeEvent struct{}
 
 type session struct {
+	traceRequests              map[int64]*traceRequest
+	traceCollect               bool
+	traceCopy                  *federation.TraceDestination
+	traceTargets               []federation.TraceRecipient
+	traceTargetsBytes          int
+	runFromTrace               bool
 	commsRequests              map[int64]commsRequest
 	runID, runGeneration       string
 	runSequence                uint64
@@ -279,6 +288,7 @@ func (s *session) issue(request routedRequest) {
 		input := request.params.(protocol.DeliveryRequest)
 		request.runID = s.reserveRun()
 		input.RunID = request.runID
+		s.runFromTrace = request.traceCopy
 		request.params = input
 	}
 	// The worker sees its canonical opened identity even when the public caller
@@ -382,6 +392,7 @@ func (s *session) connectionClosed() {
 	s.settlePending(protocol.NotConnected)
 	for id, state := range s.requests {
 		s.logResult(state.frame, nil, protocol.NotConnected)
+		s.finishTrace(state.frame, nil, protocol.NotConnected, nil)
 		delete(s.requests, id)
 	}
 }
@@ -412,8 +423,9 @@ func (s *session) drain() bool {
 
 func (s *session) reject(frame protocol.Frame, code int) {
 	s.logResult(frame, nil, code)
+	s.finishTrace(frame, nil, code, nil)
 	if s.forwarded != nil {
-		s.forwarded <- rpcReply(frame.Method, answer{code: code})
+		s.forwarded <- s.traceReply(frame.Method, answer{code: code})
 		return
 	}
 	s.stopping = true
@@ -428,8 +440,9 @@ func (s *session) reject(frame protocol.Frame, code int) {
 
 func (s *session) result(frame protocol.Frame, value any) {
 	s.logResult(frame, value, 0)
+	s.finishTrace(frame, value, 0, nil)
 	if s.forwarded != nil {
-		s.forwarded <- rpcReply(frame.Method, answer{value: value})
+		s.forwarded <- s.traceReply(frame.Method, answer{value: value})
 		return
 	}
 	body, err := protocol.ResultBytes(frame.ID, frame.Method, value)
@@ -440,8 +453,9 @@ func (s *session) result(frame protocol.Frame, value any) {
 
 func (s *session) error(frame protocol.Frame, code int, data any) {
 	s.logResult(frame, nil, code)
+	s.finishTrace(frame, nil, code, nil)
 	if s.forwarded != nil {
-		s.forwarded <- rpcReply(frame.Method, answer{code: code, data: data})
+		s.forwarded <- s.traceReply(frame.Method, answer{code: code, data: data})
 		return
 	}
 	body, err := protocol.ErrorBytes(frame.ID, code, data)

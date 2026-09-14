@@ -235,7 +235,7 @@ func (s *session) awaitRemote(requestID int64, leg int, method string, reply <-c
 }
 
 func remoteAnswer(method string, reply federation.Reply) answer {
-	result := answer{remote: &reply}
+	result := answer{remote: &reply, trace: reply.Trace}
 	if reply.Error != nil {
 		result.code = reply.Error.Code
 		if len(reply.Error.Data) != 0 {
@@ -339,17 +339,26 @@ type messageLeg struct {
 	code   int
 }
 
+// Trace collection is optional for ordinary sends; the federation transport
+// downgrades it on legacy links without altering ordinary delivery.
+func (s *session) collectTraceLeg() bool {
+	return s.traceCopy == nil && (s.forwarded == nil || s.traceCollect)
+}
+
 func (s *session) newMessageLeg(caller federation.Caller, messageID, host string, input *protocol.MessageSendRequest, labels []string) messageLeg {
 	leg := messageLeg{labels: labels}
 	if host == s.daemon.host {
-		leg.wait = s.daemon.directory.forwardLocal(caller, s.identity, "message.send", input, messageID)
+		leg.wait = s.daemon.directory.forwardLocalTrace(caller, s.identity, "message.send", input, messageID, s.collectTraceLeg(), s.traceCopy)
 	} else if host == "local" {
 		leg.code = protocol.UnknownHost
 	} else {
+		if s.traceCopy != nil {
+			input = &protocol.MessageSendRequest{Target: s.traceCopy.SessionID, Message: input.Message}
+		}
 		params, _ := protocol.EncodeParams("message.send", input)
 		reply := make(chan federation.Reply, 1)
 		leg.reply, leg.code = reply, s.daemon.directory.postFederation(federation.OutgoingCall{Value: federation.Forward{From: caller,
-			Request: federation.PublicRequest{Method: "message.send", Params: params, MessageID: messageID}}, Reply: reply})
+			Request: federation.PublicRequest{Method: "message.send", Params: params, MessageID: messageID, Trace: s.collectTraceLeg(), TraceCopy: s.traceCopy}}, Reply: reply})
 	}
 	return leg
 }
@@ -377,7 +386,7 @@ func (s *session) sendFederated(frame protocol.Frame, input *protocol.MessageSen
 		}
 		localInput := *input
 		localInput.Host = s.daemon.host
-		local := s.daemon.directory.forwardLocal(caller, s.identity, frame.Method, &localInput, messageID)
+		local := s.daemon.directory.forwardLocalTrace(caller, s.identity, frame.Method, &localInput, messageID, s.collectTraceLeg(), s.traceCopy)
 		s.startWork(frame, func(done <-chan struct{}) answer {
 			return s.collectGroupSend(caller, input, messageID, local, hosts, done)
 		})
@@ -427,11 +436,12 @@ func (s *session) startWork(frame protocol.Frame, work func(<-chan struct{}) ans
 }
 
 func collectMessageSend(messageID string, legs []messageLeg, order []string, done <-chan struct{}, failure int) answer {
+	traceRefs := []federation.TraceRecipient{}
 	result := &protocol.MessageSendResult{MessageID: messageID, Deliveries: []protocol.MessageSendDelivery{}}
 	for _, leg := range legs {
 		if leg.code != 0 {
 			if len(leg.labels) == 0 {
-				return answer{code: leg.code}
+				return answer{code: leg.code, trace: traceRefs}
 			}
 			for _, label := range leg.labels {
 				result.Deliveries = append(result.Deliveries, protocol.MessageSendDelivery{Target: label, Disposition: "rejected", Reason: reason(leg.code, "no_receipt")})
@@ -450,12 +460,14 @@ func collectMessageSend(messageID string, legs []messageLeg, order []string, don
 			}
 		}
 		if !ok {
-			return answer{code: failure}
+			return answer{code: failure, trace: traceRefs}
 		}
 		value := remoteAnswer("message.send", reply)
+		remaining := maxTraceRecipients - len(traceRefs)
+		traceRefs = append(traceRefs, value.trace[:min(remaining, len(value.trace))]...)
 		if value.code != 0 {
 			if len(leg.labels) == 0 {
-				return answer{code: value.code}
+				return answer{code: value.code, trace: traceRefs}
 			}
 			for _, label := range leg.labels {
 				result.Deliveries = append(result.Deliveries, protocol.MessageSendDelivery{Target: label, Disposition: "rejected", Reason: reason(value.code, "no_receipt")})
@@ -473,7 +485,7 @@ func collectMessageSend(messageID string, legs []messageLeg, order []string, don
 			return result.Deliveries[left].SessionID < result.Deliveries[right].SessionID
 		})
 	}
-	return answer{value: result}
+	return answer{value: result, trace: traceRefs}
 }
 
 func (s *session) collectGroupSend(caller federation.Caller, input *protocol.MessageSendRequest, messageID string, local federation.Wait, hosts <-chan federation.Reply, done <-chan struct{}) answer {
@@ -500,10 +512,14 @@ func (d *directory) admitFederation(call federation.IncomingCall) (federation.Wa
 	if err != nil {
 		return nil, err
 	}
-	return d.forwardLocal(call.From, nil, call.Request.Method, params, call.Request.MessageID), nil
+	return d.forwardLocalTrace(call.From, nil, call.Request.Method, params, call.Request.MessageID, call.Request.Trace, call.Request.TraceCopy), nil
 }
 
 func (d *directory) forwardLocal(from federation.Caller, omit *entry, method string, params any, messageID string) federation.Wait {
+	return d.forwardLocalTrace(from, omit, method, params, messageID, true, nil)
+}
+
+func (d *directory) forwardLocalTrace(from federation.Caller, omit *entry, method string, params any, messageID string, collect bool, copy *federation.TraceDestination) federation.Wait {
 	caller := from
 	caller.Groups = append([]string(nil), from.Groups...)
 	owned := make(chan struct{})
@@ -512,8 +528,10 @@ func (d *directory) forwardLocal(from federation.Caller, omit *entry, method str
 	s.identity = &entry{row: row{SessionID: caller.SessionID, Name: caller.Name, Product: caller.Product,
 		Groups: append([]string(nil), caller.Groups...)}, peer: true, done: owned}
 	s.caller, s.omit, s.forwarded, s.messageID = &caller, omit, reply, messageID
+	s.traceCollect, s.traceCopy = collect, copy
 	s.dispatchRequest(protocol.Frame{ID: 1, Method: method, Request: true}, params)
 	return func(done <-chan struct{}) (federation.Reply, bool) {
+		defer s.releaseTraceTargets()
 		for {
 			select {
 			case value := <-reply:
@@ -550,7 +568,7 @@ func (d *directory) postCallerForward(s *session, call federation.OutgoingCall, 
 	if d.daemon.federation == nil {
 		return protocol.UnknownHost
 	}
-	if call.Value.Request.Method == "lane.spawn" && s.caller == nil {
+	if (call.Value.Request.Method == "lane.spawn" || call.Value.Request.Method == "trace.configure") && s.caller == nil {
 		owner := s.identity.lifetime
 		if owner == nil || owner.ended || s.identity.attachment != s {
 			return protocol.NotConnected

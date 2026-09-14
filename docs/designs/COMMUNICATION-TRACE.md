@@ -1,8 +1,8 @@
 # Communication logging and parent-owned child tracing
 
-Status: revised proposal, 2026-09-14. Parent tracing is not implemented.
+Status: implementation candidate, 2026-09-14; not yet released.
 Operator logging is a separate implementation already merged in PR #71.
-This proposal supersedes sibling isolation as the subject of issue #63;
+This design supersedes sibling isolation as the subject of issue #63;
 it does not change group routing.
 
 ## Hard requirement: no new persistence
@@ -44,8 +44,7 @@ shell/network activity, native prompts outside Sessionbus, or model reasoning.
 
 The initial setting at spawn/resume is `trace: off | events | content`.
 `trace.configure {session_id, mode}` changes a direct child's live policy, including
-while it runs. Configuration returns the effective mode and a live observation
-boundary. Enabling applies to subsequent observations; there is no retroactive
+while it runs. Configuration returns the canonical child ID and effective mode. Enabling applies to subsequent observations; there is no retroactive
 exposure. Resuming a lane does not inherit a former parent's trace setting.
 
 Trace ownership is independent of persistent/notify/auto-close policy. Persistent
@@ -92,16 +91,18 @@ message_id, delivery_id, and run_id when known. Unresolved selectors remain
 unresolved; no identity is invented. Do not serialize credentials, authorization
 tokens, environment, arbitrary peer info, arguments or raw protocol frames.
 
-Observe sends, recipient dispatches/rejections, receipts, Run boundaries and
-lane lifecycle. A receipt remains the product's report or the daemon's explicit
+Parent tracing observes message sends and settled delivery results. The separate
+operator logger also observes Run and lane lifecycle. A receipt remains the product's report or the daemon's explicit
 loss classification. `written` does not prove consumption; `queued_for_next_turn`
 does not identify a future consuming Run; `no_receipt` remains uncertain. A trace
 cannot reconstruct consumption that an adapter never witnessed.
 
 Projection follows the parent's policy at observation time. Parent `events` mode
 never receives message content, even when operator content logging is enabled.
-Increasing the mode later does not upgrade older queued events. On disable,
-discard pending notifications for that child; do not recall events already sent.
+Increasing the mode later does not upgrade older queued events. `off` prevents subsequent admissions; it does not recall original sends already
+admitted with a trace snapshot, so a copy may still arrive after `off`, including
+from remote origins. Local child snapshots are discarded on any policy change
+before emission. A copy is refused at arrival if its parent lifetime has ended.
 With mixed child policies, expose only the authorized participant details.
 
 ## Copy at the delivery gate
@@ -169,8 +170,13 @@ recipients in the existing bounded operation lifetime.
 Submit each copy as bounded daemon-owned ordinary message work. Its completion
 releases that work through the existing delivery lifecycle; it neither changes
 the original response nor invokes parent-copy generation. Shutdown must join it.
-The exact trusted trace-marker and remote eligibility schema remain part of the
-protocol implementation, not additional public recipient-selection parameters.
+The implementation allows at most 256 trace operations and 4 MiB of retained
+trace projections per daemon. A copy's ordinary delivery wait is bounded to five
+seconds; expiration means confirmation was not obtained, not proof that the
+copy was never delivered. There is no retry. These bounds never extend the
+original send's wait.
+The trusted trace marker and remote eligibility schema are internal federation
+fields, not public recipient-selection parameters.
 
 ## One emitting daemon across federation
 
@@ -194,8 +200,8 @@ If the routing context ends or the reporting path is lost, retain only the
 failure/uncertainty that normal routing actually established. Do not wait longer
 for tracing, recreate the operation, replay a copy, or query logs.
 
-The protocol detail still to specify is the bounded internal forwarding metadata
-for remote parent eligibility, observation phase and live ownership. Only the
+The internal forwarding metadata carries a bounded set of child IDs, policy
+modes/revisions, selected target labels and existing live parent routing references. Only the
 authenticated daemon responsible for an endpoint can supply its policy; public
 senders cannot inject trace recipients or grant access. Parent route information
 must not become authority merely by carrying a claimed session ID. No durable
@@ -206,8 +212,14 @@ index or independent cross-host trace matcher is introduced.
 Remote tracing controls/events follow authenticated federation routing and the
 live trace-owner relationship. Link loss may lose events; it must not establish
 fresh authority from a claimed owner_session_id. No remote trace query, backlog
-transfer or recovery protocol is introduced. Unsupported remote hosts report
-unsupported tracing rather than pretending to provide an empty complete stream.
+transfer or recovery protocol is introduced. Explicit tracing controls and copies
+require the negotiated `sessionbus-trace/1` federation capability. Updated hubs
+report `unsupported_trace` when an involved link lacks it. This includes any
+explicit spawn `trace` field; omitting that field retains the old spawn shape.
+Ordinary messages still reach older hosts: optional eligibility collection is
+disabled on that leg. No complete-stream guarantee is made. If adding internal
+eligibility metadata would exceed the existing frame bound, omit that metadata
+and retain the original ordinary result instead of failing the original send.
 
 The current request schemas are closed. This change keeps protocol 1 and adds
 the closed `trace.configure` method plus the optional closed `lane.spawn.trace`

@@ -13,6 +13,8 @@ import (
 )
 
 type entry struct {
+	traceMode      string
+	traceVersion   string
 	lifetime       *ownership
 	parent         *ownership
 	row            row
@@ -255,6 +257,10 @@ func (d *directory) publish(start *launch, owner *session, createdAt time.Time) 
 	item.claimed = false
 	item.attachment = owner
 	item.lifetime = &ownership{id: item.row.SessionID, token: randomID("owner"), destinations: map[string]bool{}}
+	if start.input != nil && item.parent != nil && !item.parent.ended {
+		item.traceMode = start.input.Trace
+		item.traceVersion = randomID("policy")
+	}
 	if !createdAt.IsZero() {
 		item.row.CreatedAt = createdAt
 	}
@@ -420,6 +426,9 @@ func (d *directory) routeLocked(item *entry, method string, request routedReques
 	if item.claimed && method != "message.deliver" {
 		return protocol.Busy
 	}
+	if request.traceCopy && (item.lifetime == nil || item.lifetime.ended || item.lifetime.token != request.traceLifetime) {
+		return protocol.NotConnected
+	}
 	if item.attachment == nil {
 		return protocol.NotConnected
 	}
@@ -439,6 +448,8 @@ func (d *directory) routeLocked(item *entry, method string, request routedReques
 }
 
 func (d *directory) end(item *entry) {
+	item.traceMode = ""
+	item.traceVersion = ""
 	d.endOwner(item.lifetime)
 	item.attachment, item.running = nil, false
 	close(item.done)

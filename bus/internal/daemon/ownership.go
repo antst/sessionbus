@@ -18,7 +18,7 @@ func (d *directory) remoteOwnerLocked(caller federation.Caller) *ownership {
 		return owner
 	}
 	host := caller.SessionID[strings.LastIndexByte(caller.SessionID, '@')+1:]
-	owner := &ownership{id: caller.SessionID, token: caller.OwnerLifetime, host: host, attachment: caller.SourceAttachment}
+	owner := &ownership{caller: caller, id: caller.SessionID, token: caller.OwnerLifetime, host: host, attachment: caller.SourceAttachment}
 	d.remoteOwners[key] = owner
 	return owner
 }

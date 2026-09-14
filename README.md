@@ -119,6 +119,52 @@ check. It does not grant peer visibility: ordinary session lists remain
 restricted by groups. Lane requests resolve the requested executable on the
 service `PATH` even if it is not advertised.
 
+### Parent-controlled child tracing
+
+Tracing defaults to **off**. A parent can select `"trace":"events"` or
+`"trace":"content"` in the Sessionbus tool's `spawn` arguments, for a fresh or
+resumed lane. `events` includes message identities and delivery outcomes;
+`content` also includes the message body. To change a child's mode while it runs:
+
+```json
+{"action":"trace","arguments":{"session_id":"child-id@host","mode":"content"}}
+```
+
+Use `"mode":"off"` to stop tracing. Only the child's live parent can configure
+it; sharing a group or reusing an old parent's session ID does not grant access.
+This also works for persistent children, but the tracing relationship itself
+does not survive its parent ending or a daemon restart. Resume under the new
+parent to establish a new relationship; no previous tracing policy is restored.
+
+After the original send settles, its originating daemon sends one ordinary
+message to each eligible parent. If two children of the same parent communicate,
+that parent gets one copy, including both `matched_children` and their delivery
+results. The copy has a new message ID; its JSON body has `kind: sessionbus.trace`,
+the original `message_id`, `from`, permitted recipients/results, and an optional
+`body`. It is a daemon report, not a request from the original sender. Do not
+reply to its generated daemon identity. Copies and their completion pointers
+do not generate more copies.
+
+Normal parent delivery policy applies: an idle-run parent can start a Run,
+while a staging parent receives the message for a later turn. Copy delivery
+never holds up the original result. Copies are best-effort, memory-bounded and
+not retried; an unconfirmed copy may nevertheless have reached its recipient.
+Original `written` or `no_receipt` outcomes keep their existing meanings and do
+not prove native consumption.
+
+`off` prevents subsequent admissions; it does not recall original sends already
+admitted with a trace snapshot, so a copy may still arrive after `off`, including
+from remote origins. Local child snapshots are discarded if their policy changes
+before emission. Snapshots are never upgraded, and a copy is refused at arrival
+if its parent's lifetime has ended.
+
+There is **no new persistence**: no trace history, read API, replay, disk queue,
+or changes to durable lane rows. Normal native transcripts may retain delivered
+messages as usual. Tracing works with communication logging disabled. Updated
+daemons, hub and SDK/tool declarations are required for remote tracing; older
+hosts continue ordinary messaging. See the [tracing design](docs/designs/COMMUNICATION-TRACE.md)
+for the scope and compatibility contract.
+
 ### Communication logs
 
 Communication logging is **off by default**. To enable it, edit
@@ -161,7 +207,7 @@ gap records; a disk error stops logging and reports a diagnostic on stderr.
 Shutdown joins the writer. Retention, a crash or a disk failure can lose records;
 this is diagnostic logging, not proof that every communication was retained.
 Logging does not enable parent tracing or deliver messages to a parent. The
-[child tracing proposal](docs/designs/COMMUNICATION-TRACE.md) is separate.
+[child tracing](#parent-controlled-child-tracing) is separate.
 
 ### Connect hosts to a hub
 
