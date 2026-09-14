@@ -29,7 +29,7 @@ func TestMetadataFiltersAndOmitsContent(t *testing.T) {
 	}
 	if !logger.Emit(Event{Type: Request, Method: MessageSend, MessageID: "message-1",
 		Body: "private body", State: Running,
-		From: &Endpoint{SessionID: "session-1", Product: "codex", Name: "one", Groups: []string{"group-2"}},
+		From: &Endpoint{SessionID: "session-1", Product: "fixture-peer", Name: "one", Groups: []string{"group-2"}},
 		To:   &Endpoint{Host: "beta", Target: "worker", Targets: []string{"worker", "reviewer"}}}) {
 		t.Fatal("matching event was not admitted")
 	}
@@ -52,7 +52,7 @@ func TestMetadataFiltersAndOmitsContent(t *testing.T) {
 	if len(records) != 2 || records[0].Sequence != 1 || records[1].Sequence != 2 {
 		t.Fatalf("records = %+v", records)
 	}
-	if records[0].Host != "alpha" || records[0].Incarnation != "daemon-1" || records[0].From.Product != "codex" || records[0].From.Name != "one" {
+	if records[0].Host != "alpha" || records[0].Incarnation != "daemon-1" || records[0].From.Product != "fixture-peer" || records[0].From.Name != "one" {
 		t.Fatalf("metadata record = %+v", records[0])
 	}
 	if got := records[0].To.Targets; len(got) != 2 || got[0] != "worker" || got[1] != "reviewer" {
@@ -120,6 +120,32 @@ func TestReceiptValidationMatchesWireGrammar(t *testing.T) {
 	stats := logger.Stats()
 	if stats.Written != 4 || stats.LostInvalid != 3 {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestRPCFailureSerializesOnlyNumericErrorCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger := openTestLogger(t, Options{Mode: Content, Path: path, Host: "local", Incarnation: "one",
+		MaxFileBytes: 1 << 20, MaxFiles: 1, QueueBytes: 1 << 20})
+	if !logger.Emit(Event{Type: Lifecycle, Method: TurnExecute, State: Settled,
+		Outcome: Failed, ErrorCode: -32004}) {
+		t.Fatal("typed RPC failure was not admitted")
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := mustRead(t, path)
+	if !bytes.Contains(raw, []byte(`"error_code":-32004`)) {
+		t.Fatalf("numeric error code missing: %s", raw)
+	}
+	for _, forbidden := range [][]byte{[]byte(`"error_data"`), []byte(`"error_text"`), []byte(`"body"`)} {
+		if bytes.Contains(raw, forbidden) {
+			t.Fatalf("failure record contains forbidden content %q: %s", forbidden, raw)
+		}
+	}
+	records := decodeRecords(t, raw)
+	if len(records) != 1 || records[0].ErrorCode != -32004 {
+		t.Fatalf("record = %+v", records)
 	}
 }
 

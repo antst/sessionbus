@@ -123,6 +123,7 @@ type Event struct {
 	MessageID  string           `json:"message_id,omitempty"`
 	DeliveryID string           `json:"delivery_id,omitempty"`
 	RunID      string           `json:"run_id,omitempty"`
+	ErrorCode  int              `json:"error_code,omitempty"`
 	State      State            `json:"state,omitempty"`
 	Outcome    Outcome          `json:"outcome,omitempty"`
 	From       *Endpoint        `json:"from,omitempty"`
@@ -167,6 +168,7 @@ type diskRecord struct {
 	MessageID   string           `json:"message_id,omitempty"`
 	DeliveryID  string           `json:"delivery_id,omitempty"`
 	RunID       string           `json:"run_id,omitempty"`
+	ErrorCode   int              `json:"error_code,omitempty"`
 	State       State            `json:"state,omitempty"`
 	Outcome     Outcome          `json:"outcome,omitempty"`
 	From        *Endpoint        `json:"from,omitempty"`
@@ -342,7 +344,7 @@ func (l *Logger) Emit(event Event) bool {
 		Schema: Schema, Host: l.host, Incarnation: l.incarnation,
 		Sequence: sequence, UTC: at, Type: event.Type, Method: event.Method,
 		MessageID: event.MessageID, DeliveryID: event.DeliveryID,
-		RunID: event.RunID, State: event.State,
+		RunID: event.RunID, ErrorCode: event.ErrorCode, State: event.State,
 		Outcome: event.Outcome, From: event.From,
 		To: event.To, Receipt: event.Receipt, Body: event.Body,
 	})
