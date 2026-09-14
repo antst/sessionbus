@@ -17,7 +17,7 @@ constraint, not an optimization or a deferred implementation choice.
   durable lane rows must not acquire tracing state.
 - No `trace.read`, retained-history API, replay, catch-up or restart recovery.
 - Only bounded volatile state is permitted: live policy/ownership, pending
-  notifications, correlation/deduplication and loss counters. Bound both bytes
+  notifications, per-message parent-recipient selection and loss counters. Bound both bytes
   and event counts; queued work also needs a lifetime bound.
 - Trace state is discarded when its live ownership ends or the process restarts.
   A reconnected parent may explicitly configure a new live subscription after
@@ -94,27 +94,72 @@ Increasing the mode later does not upgrade older queued events. On disable,
 discard pending notifications for that child; do not recall events already sent.
 With mixed child policies, expose only the authorized participant details.
 
-## One copy when two traced children talk
+## Copy at the delivery gate
 
-For a common parent, one logical send produces at most one content-bearing trace
-event identified by message_id. `matched_children` is the union of traced source
-and recipient children. Matching both endpoints does not create a second copy.
-Dispatch, late participant and receipt updates reference message_id/delivery_id
-and never repeat the body. Group fan-out adds recipient metadata, not body copies.
-Two deliberate sends with identical text have different IDs and stay distinct.
+Emit parent copies from the daemon's existing message-routing/delivery gate.
+The source and resolved target are attributes of one routed message. They are
+not separate trace records to register and match later. Checking their tracing
+policies only selects recipients of the same copy.
 
-This holds across hosts too. Source/destination operator logs may each retain
-physical observations, but those files do not feed the parent stream. Parent
-trace emission needs one canonical emission decision per parent and logical
-message, using authenticated routing and bounded in-flight state. Do not turn
-an evicted deduplication entry into permission to emit a late second body; an
-observation that cannot be correlated within the bound must be dropped with
-loss reported when possible. No durable deduplication table is permitted.
+For each logical message:
 
-Before implementation, specify the local/federated emission authority and its
-lifetime/late-arrival rules. Test overlapping traced siblings, multicast,
-interleaved receipts, saturation and connection replacement. A persistent index
-or unbounded seen-ID set is not an acceptable way to satisfy deduplication.
+1. Capture the source and requested/resolved targets through ordinary routing.
+2. Check the parent-selected tracing policy of the source and each target.
+3. Form the set of eligible parent recipients. A parent present through both
+   source and target is present once; choose its permitted content projection
+   from those endpoint policies.
+4. Enqueue one trace copy for each selected parent through the parent's live
+   trace delivery queue. Preserve the real source/target in the copy and mark it
+   as a daemon-generated trace notification.
+5. Route the original message normally. Queue rejection, uncertain forwarding
+   or later receipts can be reported as status updates carrying the existing
+   message_id/delivery_id, without another body copy.
+
+A trace copy may say routing is planned, dispatch was queued, or delivery was
+rejected when that is the actual observation. It must not label a planned or
+queued delivery as native receipt or consumption. A later receipt remains the
+product's claim. No conversation reconstruction or matching engine is needed.
+
+For A -> B where both children have tracing enabled for parent P, the recipient
+set is simply {P}; the gate creates one copy. For different parents P and Q,
+the set is {P,Q}, each with its permitted projection. Group fan-out uses the same
+set across that message's recipient loop, so siblings do not multiply body
+copies. Equal text in separate sends remains separate traffic.
+
+Keep any already-notified parent set only within the existing in-flight message
+routing context. It is bounded transient routing bookkeeping, not a global
+seen-message registry or retained trace history. A parent gets at most one body
+for that message; later recipient/receipt information is metadata. Drop work
+that exceeds bounds rather than extending its lifetime or spilling to disk.
+
+## One emitting daemon across federation
+
+One logical message can cross several physical delivery gates. Therefore the
+originating daemon owns the parent-copy decision for that message; hubs and
+remote destination daemons must not independently emit second copies of it.
+A daemon-generated original message also gets one originating routing context.
+
+Each destination daemon knows its local target's live parent/trace policy.
+Return the eligible parent routing information and target observation to the
+originating daemon as typed metadata on the existing forwarding exchange.
+The originating daemon merges those recipients into the same per-message set.
+This is remote routing information, not a second trace stream to match. The hub
+transports the exchange; it does not create a new copy at each hop. Operator
+logs remain independent per-host diagnostic observations.
+
+Local eligibility can produce an immediate parent copy at the source gate.
+Eligibility known only at a remote gate can produce a later copy when that
+routing report arrives. If that parent already received the body, send at most
+a metadata update. Do not hold ordinary delivery waiting for trace reports.
+If the routing context has ended or the reporting path is lost, discard late
+trace work; do not recreate the message context, replay a copy, or query logs.
+
+The protocol detail still to specify is the bounded internal forwarding metadata
+for remote parent eligibility, observation phase and live ownership. Only the
+authenticated daemon responsible for an endpoint can supply its policy; public
+senders cannot inject trace recipients or grant access. Parent route information
+must not become authority merely by carrying a claimed session ID. No durable
+index or independent cross-host trace matcher is introduced.
 
 ## Federation and compatibility
 
@@ -185,7 +230,9 @@ outside Sessionbus or an interval it did not cover.
 - Events-only never exposes content; policy changes and queued-event handling
   cannot disclose previously unauthorized data.
 - A common parent's two traced children produce one logical body copy, locally
-  and across hosts. Duplicate text in distinct sends is not collapsed.
+  and across hosts, through one emitter and a per-message parent-recipient set.
+  Hubs and destination daemons cannot independently duplicate it. Distinct sends
+  with equal text remain distinct; no global matching/seen-ID registry exists.
 - Bound memory, counts and queued lifetimes under saturation, stalled peers,
   late federated arrivals and shutdown. Drop trace work rather than spill to disk
   or block ordinary routing; join all trace work on shutdown.
