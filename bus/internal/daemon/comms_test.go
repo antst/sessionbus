@@ -157,6 +157,9 @@ func TestCommunicationLogFederatedMessageCorrelation(t *testing.T) {
 	sender := connectPeer(t, daemons["alpha"].config.SocketPath, "sender", "sender", "team")
 	local := connectPeer(t, daemons["alpha"].config.SocketPath, "local", "local", "team")
 	remote := connectPeer(t, daemons["beta"].config.SocketPath, "remote", "remote", "team")
+	// Local hello does not wait for the asynchronous federation supervisor.
+	// Observe the remote row through the hub before measuring group fan-out.
+	awaitRemotePeer(t, sender, "beta", "remote@beta")
 	var sent protocol.MessageSendResult
 	must(t, sender.call("message.send", protocol.MessageSendRequest{Group: "team", Message: "federated once"}, &sent))
 	if len(sent.Deliveries) != 2 {
