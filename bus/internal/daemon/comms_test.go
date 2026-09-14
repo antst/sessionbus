@@ -271,3 +271,38 @@ func TestCommunicationLogRunMetadataAndSupersession(t *testing.T) {
 		t.Fatalf("trigger=%v superseded=%v\n%s", triggered, superseded, raw)
 	}
 }
+
+func TestCommunicationLogBusySendNeverDispatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "comms", "log.jsonl")
+	logger, err := commslog.Open(commslog.Options{Mode: commslog.Content, Path: path, Host: "alpha", Incarnation: "busy-test", MaxFileBytes: 1 << 20, MaxFiles: 2, QueueBytes: 1 << 20})
+	must(t, err)
+	d := &Daemon{host: "alpha", comms: logger}
+	d.directory = newDirectory(d, nil)
+	s := pullReviewSender(d)
+	for i := 0; i < protocol.MaxOperations; i++ {
+		s.requests[int64(i+1)] = &requestState{}
+	}
+	frame := protocol.Frame{ID: 1000, Method: "message.send", Request: true}
+	s.dispatchRequest(frame, &protocol.MessageSendRequest{Target: "recipient", Message: "busy attempt"})
+	reply := <-s.forwarded
+	if reply.Error == nil || reply.Error.Code != protocol.Busy {
+		t.Fatalf("reply: %+v", reply)
+	}
+	if len(s.commsRequests) != 0 {
+		t.Fatal("busy log context retained")
+	}
+	must(t, logger.Close())
+	raw, err := os.ReadFile(path)
+	must(t, err)
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	rows := []commslog.Event{}
+	for scanner.Scan() {
+		var event commslog.Event
+		must(t, json.Unmarshal(scanner.Bytes(), &event))
+		rows = append(rows, event)
+	}
+	must(t, scanner.Err())
+	if len(rows) != 2 || rows[0].Body != "busy attempt" || rows[0].MessageID == "" || rows[1].MessageID != rows[0].MessageID || rows[1].ErrorCode != protocol.Busy || rows[1].DeliveryID != "" || rows[1].Body != "" {
+		t.Fatalf("records: %s", raw)
+	}
+}

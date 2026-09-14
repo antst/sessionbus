@@ -31,6 +31,14 @@ func (s *session) handleRequest(frame protocol.Frame, params any) {
 
 func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 	if len(s.requests) >= protocol.MaxOperations && frame.Method != "turn.ready" {
+		messageID := ""
+		if frame.Method == "message.send" {
+			messageID = s.messageID
+			if messageID == "" {
+				messageID = randomID("message")
+			}
+		}
+		s.logRequest(frame, params, messageID)
 		s.error(frame, protocol.Busy, nil)
 		return
 	}
