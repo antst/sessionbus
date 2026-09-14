@@ -473,9 +473,12 @@ bound forces a kill, worker EOF fails the outstanding caller exactly once; the d
 fabricates an interrupted result.
 
 After orderly close or unrequested EOF, the durable row is offline and
-resumable. `forget:true` deletes it only after the worker is stopped. There is no
-closed row state. Independent terminal auto-close uses this same Close path;
-product adapters own no archival timer.
+resumable. A later close of that offline row succeeds without launching a
+worker and leaves the row resumable. `forget:true` deletes the offline durable
+row directly; for a connected row it deletes only after the worker is stopped.
+Neither path opens or deletes product-owned native history. There is no closed
+row state. Independent terminal auto-close uses this same Close path; product
+adapters own no archival timer.
 
 ### 1.2 Edge rules
 
@@ -528,10 +531,10 @@ product adapters own no archival timer.
   child, so abrupt wrapper death cannot free the lock while a surviving child
   writes; contention is `spawn_failed` with `session busy`. A native product's
   own mechanism qualifies only when it excludes competing processes.
-- Run start/read/wait/ack, `turn.interrupt`, or `session.close` addressed to a durable row
-  without a connection returns `not_connected`. Resume is an explicit
-  `lane.spawn`; a caller kit may compose that automatically without changing the
-  wire.
+- Run start/read/wait/ack or `turn.interrupt` addressed to a durable row without
+  a connection returns `not_connected`. `session.close` instead performs the
+  offline row operation described above. Resume is an explicit `lane.spawn`; a
+  caller kit may compose that automatically without changing the wire.
 - `turn.interrupt` while no run is outstanding returns not-running. An accepted
   interrupt does not promise that the native product has already stopped.
 - Collector timeout/disappearance leaves the Worker cursor intact while the
@@ -635,7 +638,7 @@ and closes the connection without writing one.
 | `-32600` | `invalid_frame` | Any method whose envelope, closed params, or daemon-checked identity grammar is invalid, but only when a valid request ID is recoverable. This includes a composed lane name beyond 128 characters. |
 | `-32602` | `invalid_hello` | `session.hello` when its union, protocol, identity, or token is invalid. |
 | `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, run start/read/wait/ack, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
-| `-32002` | `not_connected` | Run start/read/wait/ack, `turn.interrupt`, or `session.close` when a durable row has no connection. |
+| `-32002` | `not_connected` | Run start/read/wait/ack or `turn.interrupt` when a durable row has no connection. |
 | `-32003` | `busy` | Run admission when the target already has an outstanding run or 256 retained records; out-of-order ack; a cursor read after close admission; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
 | `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run. |
 | `-32005` | `already_connected` | Resume `lane.spawn` when the durable row already has its worker connection. |

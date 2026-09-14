@@ -317,6 +317,7 @@ func visibleTo(item *entry, groups []string) bool {
 
 func (d *directory) selectEntries(groups, labels []string, group string, names bool, omit *entry, request *routedRequest) ([]selected, int) {
 	d.mu.Lock()
+	var offlineClose *entry
 	result := make([]selected, 0, len(d.entries))
 	if labels == nil {
 		for _, item := range d.entries {
@@ -347,10 +348,54 @@ func (d *directory) selectEntries(groups, labels []string, group string, names b
 		result = append(result, value)
 	}
 	if request != nil && result[0].code == 0 && result[0].item != nil && !result[0].ambiguous {
-		result[0].code = d.routeLocked(result[0].item, request.method, *request)
+		item := result[0].item
+		if request.method == "session.close" && !item.peer && item.attachment == nil && !item.claimed {
+			// An offline durable lane has no Worker to receive close. Claim its
+			// exact row before dropping the mutex so resume or another cleanup
+			// cannot race the row-only operation below.
+			item.claimed = true
+			offlineClose = item
+		} else {
+			result[0].code = d.routeLocked(item, request.method, *request)
+		}
 	}
 	d.mu.Unlock()
+	if offlineClose != nil {
+		d.finishOfflineClose(offlineClose, *request)
+	}
 	return result, 0
+}
+
+func (d *directory) finishOfflineClose(item *entry, request routedRequest) {
+	forget := request.params.(*protocol.SessionCloseRequest).Forget
+	var err error
+	if forget {
+		err = d.daemon.table.delete(item.row.SessionID)
+	}
+
+	completed := false
+	d.mu.Lock()
+	if d.entries[item.row.SessionID] == item && item.attachment == nil && item.claimed {
+		completed = true
+		item.claimed = false
+		if forget && err == nil {
+			delete(d.entries, item.row.SessionID)
+			if d.names[item.row.Name] == item {
+				delete(d.names, item.row.Name)
+			}
+		}
+	}
+	d.mu.Unlock()
+
+	if !completed {
+		request.reply <- answer{code: protocol.Internal, data: "offline close claim lost"}
+		return
+	}
+	if err != nil {
+		request.reply <- answer{code: protocol.Internal, data: err.Error()}
+		return
+	}
+	request.reply <- answer{value: struct{}{}}
 }
 
 func summarize(item *entry) protocol.SessionSummary {

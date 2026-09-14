@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -761,6 +762,83 @@ func TestSpawnRunCloseResumeForgetAndRestart(t *testing.T) {
 	must(t, parent.call("session.list", protocol.SessionListRequest{SessionID: spawned.SessionID}, &listed))
 	if len(listed.Sessions) != 1 || listed.Sessions[0].Connected || listed.Sessions[0].Running {
 		t.Fatalf("restart summary = %#v", listed.Sessions)
+	}
+}
+
+func TestOfflineLaneCloseAndForget(t *testing.T) {
+	directory := testsocket.Directory(t)
+	installFixture(t, directory, "fixture-worker")
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tablePath, socket := filepath.Join(directory, "sessions.json"), filepath.Join(directory, "sessionbus.sock")
+	first, err := Start(Config{SocketPath: socket, TablePath: tablePath, Products: []string{"fixture-worker"}})
+	must(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+	owner := connectPeer(t, socket, "owner", "owner", "team")
+	var lane protocol.LaneSpawnResult
+	must(t, owner.call("lane.spawn", protocol.LaneSpawnRequest{Name: "child", Product: "fixture-worker", Open: &protocol.OpenOptions{}}, &lane))
+	must(t, owner.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID}, &struct{}{}))
+
+	historyPath := filepath.Join(directory, "native-history.jsonl")
+	history := []byte("native history remains product-owned\n")
+	must(t, os.WriteFile(historyPath, history, 0o600))
+	must(t, owner.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID}, &struct{}{}))
+	assertOfflineLane(t, owner, lane.SessionID)
+	must(t, first.Close())
+
+	second, err := Start(Config{SocketPath: socket, TablePath: tablePath, Products: []string{"fixture-worker"}})
+	must(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+	owner = connectPeer(t, socket, "owner", "owner", "team")
+	assertOfflineLane(t, owner, lane.SessionID)
+	hidden := connectPeer(t, socket, "hidden", "hidden", "other")
+	if code := rpcCode(hidden.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID, Forget: true}, &struct{}{})); code != protocol.UnknownSession {
+		t.Fatalf("invisible offline forget code = %d", code)
+	}
+
+	second.directory.mu.Lock()
+	item := second.directory.entries[lane.SessionID]
+	item.claimed = true
+	second.directory.mu.Unlock()
+	if code := rpcCode(owner.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID}, &struct{}{})); code != protocol.Busy {
+		t.Fatalf("claimed offline close code = %d", code)
+	}
+	second.directory.mu.Lock()
+	item.claimed = false
+	second.directory.mu.Unlock()
+
+	must(t, os.Chmod(tablePath, 0o500))
+	forgetErr := owner.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID, Forget: true}, &struct{}{})
+	must(t, os.Chmod(tablePath, 0o700))
+	if code := rpcCode(forgetErr); code != protocol.Internal {
+		t.Fatalf("failed durable delete code = %d (%v)", code, forgetErr)
+	}
+	var rpcErr *protocol.RPCError
+	if !errors.As(forgetErr, &rpcErr) || len(rpcErr.Data) == 0 {
+		t.Fatalf("failed durable delete lacks error data: %v", forgetErr)
+	}
+	assertOfflineLane(t, owner, lane.SessionID)
+
+	must(t, owner.call("session.close", protocol.SessionCloseRequest{SessionID: lane.SessionID, Forget: true}, &struct{}{}))
+	var listed protocol.SessionListResult
+	if code := rpcCode(owner.call("session.list", protocol.SessionListRequest{SessionID: lane.SessionID}, &listed)); code != protocol.UnknownSession {
+		t.Fatalf("forgotten offline row code = %d", code)
+	}
+	gotHistory, err := os.ReadFile(historyPath)
+	must(t, err)
+	if !bytes.Equal(gotHistory, history) {
+		t.Fatalf("native history changed: %q", gotHistory)
+	}
+	if _, err = os.Stat(filepath.Join(tablePath, rowFile(lane.SessionID))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("forgotten durable row still exists: %v", err)
+	}
+}
+
+func assertOfflineLane(t *testing.T, caller *peerClient, id string) {
+	t.Helper()
+	var listed protocol.SessionListResult
+	must(t, caller.call("session.list", protocol.SessionListRequest{SessionID: id}, &listed))
+	if len(listed.Sessions) != 1 || listed.Sessions[0].Connected || listed.Sessions[0].Running {
+		t.Fatalf("offline lane = %#v", listed.Sessions)
 	}
 }
 
