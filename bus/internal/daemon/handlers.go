@@ -5,6 +5,7 @@ package daemon
 import (
 	"slices"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
@@ -32,6 +33,9 @@ func (s *session) dispatchRequest(frame protocol.Frame, params any) {
 	if len(s.requests) >= protocol.MaxOperations && frame.Method != "turn.ready" {
 		s.error(frame, protocol.Busy, nil)
 		return
+	}
+	if frame.Method != "message.send" {
+		s.logRequest(frame, params, "")
 	}
 	switch frame.Method {
 	case "session.list":
@@ -76,6 +80,7 @@ func (s *session) peerHello(frame protocol.Frame, hello *protocol.PeerHello) {
 		s.detachRequests(protocol.Superseded)
 	}
 	s.identity = item
+	s.logSession(commslog.Connected)
 	if displaced != nil && !displaced.wire.Post(supersedeEvent{}) {
 		displaced.wire.Close()
 	}
@@ -269,7 +274,12 @@ func (s *session) launchRequest(frame protocol.Frame, start *launch) {
 
 func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest) {
 	caller := s.federationCaller()
-	if s.sendFederated(frame, input) {
+	messageID := s.messageID
+	if messageID == "" {
+		messageID = randomID("message")
+	}
+	s.logRequest(frame, input, messageID)
+	if s.sendFederated(frame, input, messageID) {
 		return
 	}
 	labels := input.Targets
@@ -278,10 +288,6 @@ func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest)
 	}
 	if input.Group != "" {
 		labels = nil
-	}
-	messageID := s.messageID
-	if messageID == "" {
-		messageID = randomID("message")
 	}
 	state := &requestState{frame: frame, messageID: messageID, deliveries: []protocol.MessageSendDelivery{}}
 	items, code := s.daemon.directory.selectEntries(caller.Groups, labels, input.Group, true, s.deliveryOmit(), nil)
@@ -327,6 +333,7 @@ func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest)
 		}
 		state.deliveries[index].SessionID = item.row.SessionID
 		state.deliveries[index].DeliveryID = randomID("delivery")
+		s.logDispatch(state.messageID, state.deliveries[index].DeliveryID, state.deliveries[index].Target, item.row.SessionID)
 		state.pending++
 		s.await(frame.ID, index, reply, s.identity.done)
 	}
@@ -372,6 +379,7 @@ func (s *session) consumeReply(event replyEvent) {
 
 func (s *session) finishRequest(id int64, state *requestState, result answer) {
 	delete(s.requests, id)
+	s.logResult(state.frame, result.value, result.code)
 	if result.code == 0 && state.selfInfo != nil {
 		// A directed remote list must identify our captured caller, even when
 		// an older destination omits self_info or reports a different identity.

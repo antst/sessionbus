@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
@@ -163,6 +164,7 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 		s.reject(frame, protocol.InvalidFrame)
 		return
 	}
+	s.logRun(commslog.TurnReady, value.RunID, commslog.Settled, value.Outcome)
 	s.runID = ""
 	s.daemon.directory.finishRun(s.identity, s)
 	policy := s.identity.row.Policy

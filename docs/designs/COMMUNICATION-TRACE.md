@@ -48,6 +48,13 @@ would need an identity-bound adapter witness rather than a timestamp guess.
 
 ## Operator logging: first implementation slice
 
+The first slice retains content only for `message.send`. Run inputs and result
+bodies are omitted; their IDs and lifecycle observations remain metadata. Every
+message observation retains explicit `from` and `to`: canonical session IDs
+with host qualification and names/products when authoritative. Requested
+selectors stay distinct from resolved recipients; unresolved targets never get
+fabricated session identities.
+
 Proposed service configuration:
 
 ```

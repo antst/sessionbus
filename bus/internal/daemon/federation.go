@@ -354,12 +354,11 @@ func (s *session) newMessageLeg(caller federation.Caller, messageID, host string
 	return leg
 }
 
-func (s *session) sendFederated(frame protocol.Frame, input *protocol.MessageSendRequest) bool {
+func (s *session) sendFederated(frame protocol.Frame, input *protocol.MessageSendRequest, messageID string) bool {
 	labels := input.Targets
 	if input.Target != "" {
 		labels = []string{input.Target}
 	}
-	messageID := randomID("message")
 	caller := s.federationCaller()
 	if input.Group != "" {
 		if input.Host != "" {
