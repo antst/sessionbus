@@ -84,9 +84,10 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 					request.Trace = false
 					event.Value.Request = request
 				}
-				target, targetErr := targetHost(request)
 				nextID++
-				body, err := requestBytes(nextID, forwardMethod, event.Value)
+				body, forwarded, err := forwardRequestBytes(nextID, event.Value)
+				event.Value, request = forwarded, forwarded.Request
+				target, targetErr := targetHost(request)
 				if cause != nil || targetErr != nil || err != nil || !wire.Send(body) {
 					code, data := protocol.ForwardLost, any(nil)
 					if targetErr != nil || err != nil {

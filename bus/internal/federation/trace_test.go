@@ -207,6 +207,38 @@ func TestTraceEnvelopeOverflowPreservesOrdinaryResult(t *testing.T) {
 	}
 }
 
+func TestTraceRequestOverflowPreservesOrdinaryForward(t *testing.T) {
+	params, _ := protocol.EncodeParams("message.send", protocol.MessageSendRequest{Target: "child@beta", Message: "hello"})
+	value := Forward{From: Caller{SessionID: "parent@alpha", Product: "peer", PrivateGroup: "session:parent@alpha",
+		Groups: []string{"session:parent@alpha", "g"}, OwnerLifetime: "parent-life"},
+		Request: PublicRequest{Method: "message.send", Params: params, MessageID: "message-one"}}
+	base, err := requestBytes(1, forwardMethod, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.From.Groups[1] = strings.Repeat("g", protocol.MaxFrameBytes-len(base)+1)
+	ordinary, err := requestBytes(1, forwardMethod, value)
+	if err != nil || len(ordinary) != protocol.MaxFrameBytes {
+		t.Fatalf("maximal ordinary request = %d, %v", len(ordinary), err)
+	}
+	value.Request.Trace = true
+	if _, err := requestBytes(1, forwardMethod, value); err == nil {
+		t.Fatal("optional trace marker unexpectedly fit in maximal request")
+	}
+	body, forwarded, err := forwardRequestBytes(1, value)
+	if err != nil || forwarded.Request.Trace || string(body) != string(ordinary) {
+		t.Fatalf("downgraded request = trace %v, bytes %d/%d, %v", forwarded.Request.Trace, len(body), len(ordinary), err)
+	}
+	frame, err := protocol.DecodeFrame(body[:len(body)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _, err := decodeForward(frame.Params, "alpha")
+	if err != nil || decoded.Request.Trace {
+		t.Fatalf("decoded downgraded request = %#v, %v", decoded.Request, err)
+	}
+}
+
 func TestTraceRecipientAndCopyValidation(t *testing.T) {
 	valid := TraceRecipient{Child: "child@beta", Target: "requested@beta", Mode: "content", Version: "revision-one", Owner: testTraceCaller()}
 	raw, _ := json.Marshal(valid)

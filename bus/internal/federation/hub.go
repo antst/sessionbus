@@ -317,7 +317,6 @@ func (l *hostLink) run(accepted bool) {
 					request.Trace = false
 					event.value.Request = request
 				}
-				target, targetErr := targetHost(request)
 				if failed || len(pending) >= maxPendingForwardedPerHost {
 					event.reply <- errorReply(protocol.ForwardLost, nil)
 					if len(pending) >= maxPendingForwardedPerHost {
@@ -327,7 +326,9 @@ func (l *hostLink) run(accepted bool) {
 					continue
 				}
 				nextID++
-				body, err := requestBytes(nextID, forwardMethod, event.value)
+				body, forwarded, err := forwardRequestBytes(nextID, event.value)
+				event.value, request = forwarded, forwarded.Request
+				target, targetErr := targetHost(request)
 				if targetErr != nil || err != nil {
 					event.reply <- errorReply(protocol.InvalidFrame, "forwarded request exceeds the frame limit")
 					continue

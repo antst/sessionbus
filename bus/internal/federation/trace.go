@@ -44,6 +44,19 @@ func requestRequiresTrace(request PublicRequest) bool {
 	return false
 }
 
+// Optional eligibility collection must not make an otherwise valid ordinary
+// forward exceed the wire limit. Explicit trace controls live in Params or
+// TraceCopy and are never removed here.
+func forwardRequestBytes(id int64, value Forward) ([]byte, Forward, error) {
+	body, err := requestBytes(id, forwardMethod, value)
+	if err == nil || !value.Request.Trace {
+		return body, value, err
+	}
+	value.Request.Trace = false
+	body, err = requestBytes(id, forwardMethod, value)
+	return body, value, err
+}
+
 func validateTraceRequest(request PublicRequest, rawRequest map[string]json.RawMessage) error {
 	traceRaw, hasTrace := rawRequest["trace"]
 	copyRaw, hasCopy := rawRequest["trace_copy"]
