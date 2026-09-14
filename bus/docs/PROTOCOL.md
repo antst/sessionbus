@@ -249,6 +249,15 @@ callback returns/throws the existing public `ProtocolError` with code `-32603`
 Both Peer and Worker kits preserve that RPC error instead of converting it to
 a native-adapter rejection. The daemon reports its existing `rejected/no_receipt`:
 no native receipt was obtained, and whether the product acted is unknown.
+When the destination daemon rejects a delivery before enqueueing it because the
+selected target has no current connection, it instead reports
+`rejected/not_submitted`. That reason proves only this delivery attempt was not
+dispatched; it says nothing about an earlier attempt or a future connection.
+A connection lost after dispatch, a stale response, or an uncertain native
+admission still reports `no_receipt`. A remote destination can return the same
+proven `not_submitted` receipt; loss of the federation response cannot establish
+that fact. Older daemons may still use `no_receipt` for an offline target, so
+callers must not infer non-submission from connection state alone.
 A completed write followed by native EOF without response bytes may report
 `written`; EOF itself adds no acknowledgment. Partial or uncertain completion
 must use the error path, not `written`. Neither path retries or replays.
