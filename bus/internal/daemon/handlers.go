@@ -318,6 +318,11 @@ func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest)
 		if code != 0 {
 			state.deliveries[index].Disposition = "rejected"
 			state.deliveries[index].Reason = reason(code, "no_receipt")
+			if code == protocol.NotConnected {
+				// route did not enqueue this delivery. This proof does not apply
+				// to NotConnected replies after dispatch or transport loss.
+				state.deliveries[index].Reason = "not_submitted"
+			}
 			continue
 		}
 		state.deliveries[index].SessionID = item.row.SessionID
