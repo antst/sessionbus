@@ -43,11 +43,16 @@ func testHub(t *testing.T) (*Hub, string, map[string]string) {
 
 func connectTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error), lifetime ...func(LifetimeEvent)) *testDaemon {
 	t.Helper()
-	raw, err := net.Dial("tcp", address)
+	configuration, err := ClientTLS(host, secret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration, err := ClientTLS(host, secret)
+	return connectTestDaemonTLS(t, address, host, configuration, admit, lifetime...)
+}
+
+func connectTestDaemonTLS(t *testing.T, address, host string, configuration *tls.Config, admit func(IncomingCall) (Wait, error), lifetime ...func(LifetimeEvent)) *testDaemon {
+	t.Helper()
+	raw, err := net.Dial("tcp", address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +75,16 @@ func connectTestDaemon(t *testing.T, address, host, secret string, admit func(In
 		}
 	})
 	return value
+}
+
+func connectLegacyTestDaemon(t *testing.T, address, host, secret string, admit func(IncomingCall) (Wait, error)) *testDaemon {
+	t.Helper()
+	configuration, err := ClientTLS(host, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration.NextProtos = []string{RosterALPN}
+	return connectTestDaemonTLS(t, address, host, configuration, admit)
 }
 
 func immediate(reply Reply) Wait {
