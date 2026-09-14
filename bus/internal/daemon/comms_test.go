@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/antst/sessionbus/bus/internal/federation"
 	"io"
 	"net"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/antst/sessionbus/bus/internal/commslog"
+	"github.com/antst/sessionbus/bus/internal/federation"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 	"github.com/antst/sessionbus/bus/sdk/go/testsocket"
 )
