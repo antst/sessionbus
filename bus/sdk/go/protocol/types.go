@@ -30,6 +30,7 @@ const (
 	NameTaken        = -32013
 	UnknownHost      = -32014
 	ForwardLost      = -32015
+	UnsupportedTrace = -32016
 )
 
 type ExtraArgument struct {

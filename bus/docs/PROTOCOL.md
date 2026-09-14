@@ -373,8 +373,10 @@ trace persistence, replay, catch-up, or recovery after restart.
 This remains protocol 1, but the method and spawn field extend closed request
 schemas. Daemon, SDK validators, and tool declarations therefore require a
 coordinated upgrade. Older daemons reject unsupported trace requests through
-their existing closed decoder; callers must not interpret that failure as
-enabled tracing.
+their existing closed decoder; a trace-aware daemon returns `unsupported_trace`
+when an involved federated host or hub cannot carry the requested control.
+Callers must not interpret either failure as enabled tracing. Upgrade every
+daemon and hub involved before requesting tracing again.
 
 #### `session.open`
 
@@ -677,6 +679,7 @@ and closes the connection without writing one.
 | `-32013` | `name_taken` | New `lane.spawn` when another row on that host already holds the requested composed name. |
 | `-32014` | `unknown_host` | `lane.describe` or new `lane.spawn` naming an unfederated `host`, or any canonical identity input whose host part is neither local nor connected. |
 | `-32015` | `forward_lost` | A one-hop federated request whose transport ends before its response; the request may or may not have been applied on the target host and is never retried. |
+| `-32016` | `unsupported_trace` | `trace.configure` or `lane.spawn.trace` when an involved federated host or hub cannot carry or enforce tracing. Upgrade every involved daemon and hub before retrying. |
 | `-32603` | `internal` | The daemon's own shutdown or durable row-file operation fails; `data` carries its error text. An explicit uncertain-delivery callback may also use this code; it never certifies native refusal. |
 
 ### 3.1 Product contract

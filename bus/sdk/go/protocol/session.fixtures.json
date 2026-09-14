@@ -187,9 +187,11 @@
     {"name":"error name taken","definition":"RPCError","valid":true,"value":{"code":-32013,"message":"name_taken"}},
     {"name":"error unknown host","definition":"RPCError","valid":true,"value":{"code":-32014,"message":"unknown_host"}},
     {"name":"error forward lost","definition":"RPCError","valid":true,"value":{"code":-32015,"message":"forward_lost"}},
+    {"name":"error unsupported trace","definition":"RPCError","valid":true,"value":{"code":-32016,"message":"unsupported_trace"}},
     {"name":"error mismatched pair","definition":"RPCError","valid":false,"value":{"code":-32001,"message":"busy"}},
     {"name":"error spawn missing data","definition":"RPCError","valid":false,"value":{"code":-32009,"message":"spawn_failed"}},
     {"name":"error nonspawn data","definition":"RPCError","valid":false,"value":{"code":-32010,"message":"timeout","data":{"stderr_tail":[]}}},
+    {"name":"error unsupported trace data","definition":"RPCError","valid":false,"value":{"code":-32016,"message":"unsupported_trace","data":"upgrade"}},
     {"name":"error response","definition":"RPCErrorResponse","valid":true,"value":{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"not_connected"}}},
     {"name":"error response zero id","definition":"RPCErrorResponse","valid":false,"value":{"jsonrpc":"2.0","id":0,"error":{"code":-32002,"message":"not_connected"}}}
   ]
