@@ -101,24 +101,36 @@ The source and resolved target are attributes of one routed message. They are
 not separate trace records to register and match later. Checking their tracing
 policies only selects recipients of the same copy.
 
+For the initial implementation, emit the copy in the originating daemon's
+existing delivery-result handler, when that logical send settles. The recipient
+side produces its dispatch/receipt result; local routing or the hub's existing
+return path already brings that result back to the originating operation. No
+second observer or trace-specific result-matching process is needed.
+
 For each logical message:
 
 1. Capture the source and requested/resolved targets through ordinary routing.
-2. Check the parent-selected tracing policy of the source and each target.
-3. Form the set of eligible parent recipients. A parent present through both
-   source and target is present once; choose its permitted content projection
-   from those endpoint policies.
-4. Enqueue one trace copy for each selected parent through the parent's live
-   trace delivery queue. Preserve the real source/target in the copy and mark it
-   as a daemon-generated trace notification.
-5. Route the original message normally. Queue rejection, uncertain forwarding
-   or later receipts can be reported as status updates carrying the existing
-   message_id/delivery_id, without another body copy.
+2. Route the original message normally. Check the parent-selected policy of
+   the source and each resolved target at the relevant routing boundary.
+3. Use the existing send operation's delivery results, including rejections,
+   failures or uncertain outcomes. Do not add a trace-specific wait or timeout.
+4. Form the set of eligible parent recipients. A parent present through both
+   source and target is present once; select its permitted projection.
+5. Enqueue one trace copy per parent, containing the original source/target,
+   permitted body and the relevant per-recipient status results. Use the parent's
+   live trace queue and mark the copy as a daemon-generated trace notification.
 
-A trace copy may say routing is planned, dispatch was queued, or delivery was
-rejected when that is the actual observation. It must not label a planned or
-queued delivery as native receipt or consumption. A later receipt remains the
-product's claim. No conversation reconstruction or matching engine is needed.
+Placement determines what can be claimed. Sender ingress can report only a send
+attempt. A recipient gate that queued a dispatch can report dispatch admission,
+not native consumption. A returned peer receipt can report written, injected,
+queued_for_next_turn or rejected according to the actual product contract.
+Missing confirmation stays uncertain. Choosing the existing result handler gives
+one copy with the best status already available to the normal send operation;
+it deliberately does not provide an immediate pre-delivery copy as well.
+
+The send result is not a promise about subsequent native consumption. There is
+no retained job waiting to upgrade it later. No conversation reconstruction,
+second source/target trace record or independent matching engine is needed.
 
 For A -> B where both children have tracing enabled for parent P, the recipient
 set is simply {P}; the gate creates one copy. For different parents P and Q,
@@ -128,8 +140,8 @@ copies. Equal text in separate sends remains separate traffic.
 
 Keep any already-notified parent set only within the existing in-flight message
 routing context. It is bounded transient routing bookkeeping, not a global
-seen-message registry or retained trace history. A parent gets at most one body
-for that message; later recipient/receipt information is metadata. Drop work
+seen-message registry or retained trace history. A parent gets one copy of the settled send, with its permitted recipient results.
+Do not add a second content event for each receipt. Drop work
 that exceeds bounds rather than extending its lifetime or spilling to disk.
 
 ## One emitting daemon across federation
@@ -147,12 +159,12 @@ This is remote routing information, not a second trace stream to match. The hub
 transports the exchange; it does not create a new copy at each hop. Operator
 logs remain independent per-host diagnostic observations.
 
-Local eligibility can produce an immediate parent copy at the source gate.
-Eligibility known only at a remote gate can produce a later copy when that
-routing report arrives. If that parent already received the body, send at most
-a metadata update. Do not hold ordinary delivery waiting for trace reports.
-If the routing context has ended or the reporting path is lost, discard late
-trace work; do not recreate the message context, replay a copy, or query logs.
+Remote eligibility and status ride the ordinary forwarding result; they do not
+form a separate trace-report stream. Once the logical send settles, the origin
+has the existing aggregate result from which to form each parent's one copy.
+If the routing context ends or the reporting path is lost, retain only the
+failure/uncertainty that normal routing actually established. Do not wait longer
+for tracing, recreate the operation, replay a copy, or query logs.
 
 The protocol detail still to specify is the bounded internal forwarding metadata
 for remote parent eligibility, observation phase and live ownership. Only the
