@@ -27,6 +27,11 @@ constraint, not an optimization or a deferred implementation choice.
   a queue, or reconstruct trace state from it. This requirement authorizes no
   additional persistence in that logger either.
 
+Ordinary delivery may already write the received message into the parent's native
+transcript, just as any other message does. That existing product behavior is
+unchanged; this requirement forbids adding trace-specific storage or recovery,
+not the normal effects of delivering a message to the parent.
+
 A design that requires durable state must be rejected or simplified. Relaxing
 this constraint requires a separate explicit owner decision.
 
@@ -53,26 +58,31 @@ exposes Sessionbus message bodies. Native prompt/result bodies are outside the
 initial scope. Trace scope is direct child traffic, not recursive tracing of
 descendants or trace notifications.
 
-## Live delivery only
+## Ordinary delivery, live copies only
 
-Use a capability-negotiated `trace.event` notification and dedicated SDK handler.
-Do not send copies through ordinary `message.send`, Deliver or Run: tracing must
-not wake an idle-run parent, masquerade as a child message, recursively trace
-itself or cause automatic inference. A wrapper may render events or hand them
-to an existing consumer; it must not create a new trace storage subsystem.
-Model-visible forwarding would be a separate explicit parent-selected policy,
-with bounded volume.
+A parent copy is a daemon-generated message sent through the existing message
+routing, delivery queue, federation and receipt paths. Do not introduce a
+`trace.event` transport, separate SDK event handler or trace delivery subsystem.
+The parent receives the copy according to its ordinary delivery policy. In
+particular, an idle-run parent may start a Run; a staging parent may receive a
+queued-for-next-turn receipt. Enabling tracing opts into that existing behavior.
+This supersedes the earlier proposal that tracing could never wake a parent.
 
-The stream is best-effort. A full queue, timeout, unavailable parent or lost
+Give the copy its own message ID and an explicit daemon-generated trace marker,
+with the original message ID and original source/targets in the trace envelope.
+Do not impersonate the original sender. The marker is daemon-owned routing
+metadata, preserved across federation; text in a public message cannot set it.
+Marked copies bypass parent-copy generation at every hop, including their own
+delivery results. Their normal routing and receipt handling still apply.
+
+Copy submission is best-effort. A full queue, timeout, unavailable parent or lost
 connection drops trace events without delaying or changing ordinary traffic.
-Do not resend the original message or retain trace events for reconnect. Report
-loss counts on a subsequent live notification when possible. The end of a
+Do not resend the original message or retain trace copies for reconnect. The end of a
 connection or a new daemon incarnation is itself an observation discontinuity;
 a crash can lose the loss counter too. Silence never proves no communication.
 
-An event may carry a daemon incarnation and in-memory sequence to identify order
-and gaps within that live stream. These are not history cursors and are never
-persisted for resumption. No global ordering is inferred from host clocks.
+Use existing message and delivery IDs for correlation. No trace sequence,
+history cursor or global ordering mechanism is needed.
 
 ## Explicit identities and truthful observations
 
@@ -118,7 +128,8 @@ For each logical message:
    source and target is present once; select its permitted projection.
 5. Enqueue one trace copy per parent, containing the original source/target,
    permitted body and the relevant per-recipient status results. Use the parent's
-   live trace queue and mark the copy as a daemon-generated trace notification.
+   ordinary delivery queue and mark the copy as a daemon-generated trace message.
+   Enqueue it without awaiting its receipt in the original send's completion path.
 
 Placement determines what can be claimed. Sender ingress can report only a send
 attempt. A recipient gate that queued a dispatch can report dispatch admission,
@@ -138,11 +149,28 @@ the set is {P,Q}, each with its permitted projection. Group fan-out uses the sam
 set across that message's recipient loop, so siblings do not multiply body
 copies. Equal text in separate sends remains separate traffic.
 
-Keep any already-notified parent set only within the existing in-flight message
+Keep the selected parent set only within the existing in-flight message
 routing context. It is bounded transient routing bookkeeping, not a global
 seen-message registry or retained trace history. A parent gets one copy of the settled send, with its permitted recipient results.
 Do not add a second content event for each receipt. Drop work
 that exceeds bounds rather than extending its lifetime or spilling to disk.
+
+### Existing implementation boundaries
+
+`session.send` already owns the original message ID and local recipient results;
+`consumeReply` settles the pending local deliveries. Federated sends already use
+`collectMessageSend` to return an aggregate through `finishRequest`. Attach the
+copy decision to the originating operation's terminal result, covering immediate
+rejections as well as asynchronous completion. Do not independently emit from
+both a local leg and the aggregate, or from both `finishRequest` and its eventual
+response writer. Retain only the original message projection and selected parent
+recipients in the existing bounded operation lifetime.
+
+Submit each copy as bounded daemon-owned ordinary message work. Its completion
+releases that work through the existing delivery lifecycle; it neither changes
+the original response nor invokes parent-copy generation. Shutdown must join it.
+The exact trusted trace-marker and remote eligibility schema remain part of the
+protocol implementation, not additional public recipient-selection parameters.
 
 ## One emitting daemon across federation
 
@@ -186,14 +214,23 @@ capability boundary: new daemons continue protocol-1 service, while trace-aware
 attachments negotiate protocol 2. Old daemons reject an explicit protocol-2
 hello with generic invalid_hello and close. Clients explain the negotiation
 failure, including the possibility of an older daemon, without silently falling
-back to ordinary message copies.
+back to an unmarked copy or silently accepting unsupported trace controls.
 
 The coordinated change covers both SDKs, federation validation, tool declarations
-and drift tests, skills and product handling. Protocol 2 should carry delivery_id
+and drift tests, skills and product handling. Reuse ordinary message delivery in
+both SDKs; only trace controls and trusted daemon attribution need new handling.
+Protocol 2 should carry delivery_id
 in message.deliver so recipient and trace observations correlate by ID. No
 resumable ownership capability or persisted subscription machinery is in scope.
 
 ## Operator logging: first implementation slice
+
+Logging uses direct observations at existing handlers, not a message-matching or
+deduplication engine. Each observing daemon writes the original message body
+once at send admission. Dispatch and receipt records contain IDs and metadata,
+not another body. Internal forwarding legs suppress the duplicate send header.
+A parent copy is a separate marked message and is logged once as such, with its
+own ID and original-message reference; its receipt does not generate a trace.
 
 The first slice retains content only for `message.send`. Run inputs and result
 bodies are omitted; their IDs and lifecycle observations remain metadata. Every
@@ -231,10 +268,11 @@ outside Sessionbus or an interval it did not cover.
 
 ## Acceptance requirements
 
-- Trace-only operation performs no persistence writes in daemon, hub, SDK or
-  wrapper. Run with operator logging disabled and trace-storage paths unavailable;
+- Tracing adds no persistence writes or storage in daemon, hub, SDK or wrapper.
+  Run with operator logging disabled and trace-storage paths unavailable;
   tracing must not require or touch them. Ordinary pre-existing lane persistence
-  is unchanged and contains no new tracing state.
+  and native transcript behavior are unchanged and contain no new trace recovery
+  state.
 - Restart/reconnect has no trace replay, restored backlog or historical access.
   Closing/forgetting a child creates no trace-history retention obligation.
 - Default-off emits nothing to the parent. Only the validated parent configures
@@ -248,8 +286,14 @@ outside Sessionbus or an interval it did not cover.
 - Bound memory, counts and queued lifetimes under saturation, stalled peers,
   late federated arrivals and shutdown. Drop trace work rather than spill to disk
   or block ordinary routing; join all trace work on shutdown.
-- Trace notifications do not wake Runs or recursively trace themselves. Missing
-  events remain explicit uncertainty; no complete-audit claim is made.
+- Parent copies follow ordinary delivery policy, including idle-run or staging
+  behavior. Neither copies nor their receipts recursively generate copies, even
+  when the parent itself is a traced child or the copy crosses hosts.
+- Original-send completion never waits for parent-copy delivery. A full or lost
+  parent route cannot alter the original result or cause a retry.
+- Each daemon logs a body once per message, with body-free dispatch/receipt rows;
+  the separate marked parent copy has its own ID. No logging matcher is added.
+- Missing copies remain explicit uncertainty; no complete-audit claim is made.
 - Mixed versions reject unsupported tracing through the capability boundary.
 
 ## Related protocol-2 improvement: uncertain delivery
