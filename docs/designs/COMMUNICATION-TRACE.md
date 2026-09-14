@@ -42,9 +42,9 @@ child approval. Operator logging and parent tracing are independent controls:
 neither enables the other. Traces describe Sessionbus traffic, not arbitrary
 shell/network activity, native prompts outside Sessionbus, or model reasoning.
 
-The proposed initial setting at spawn/resume is `trace: off | events | content`.
+The initial setting at spawn/resume is `trace: off | events | content`.
 `trace.configure {session_id, mode}` changes a direct child's live policy, including
-while it runs. Configuration returns the effective policy and a live observation
+while it runs. Configuration returns the effective mode and a live observation
 boundary. Enabling applies to subsequent observations; there is no retroactive
 exposure. Resuming a lane does not inherit a former parent's trace setting.
 
@@ -53,10 +53,10 @@ children can be traced without tying their lifetime to the parent. Only the
 validated parent can configure tracing; group membership or a claimed session ID
 is not authority. Keep this association in memory, never in the durable row.
 
-`events` exposes routing/receipt and Run/lane lifecycle metadata. `content` also
-exposes Sessionbus message bodies. Native prompt/result bodies are outside the
-initial scope. Trace scope is direct child traffic, not recursive tracing of
-descendants or trace notifications.
+`events` exposes message routing and settled delivery metadata. `content` also
+exposes Sessionbus message bodies. Run/lane lifecycle events and native
+prompt/result bodies are outside the initial scope. Trace scope is direct child
+traffic, not recursive tracing of descendants or trace copies.
 
 ## Ordinary delivery, live copies only
 
@@ -209,19 +209,18 @@ fresh authority from a claimed owner_session_id. No remote trace query, backlog
 transfer or recovery protocol is introduced. Unsupported remote hosts report
 unsupported tracing rather than pretending to provide an empty complete stream.
 
-The current hello and request schemas are closed. Plan an explicit protocol-2
-capability boundary: new daemons continue protocol-1 service, while trace-aware
-attachments negotiate protocol 2. Old daemons reject an explicit protocol-2
-hello with generic invalid_hello and close. Clients explain the negotiation
-failure, including the possibility of an older daemon, without silently falling
-back to an unmarked copy or silently accepting unsupported trace controls.
+The current request schemas are closed. This change keeps protocol 1 and adds
+the closed `trace.configure` method plus the optional closed `lane.spawn.trace`
+field. Deploy the daemon, SDK validators and tool declarations together. An old
+daemon rejects the new method or spawn field through its existing closed
+decoder; clients must not treat that failure as an accepted trace policy or
+silently fall back to an unmarked copy.
 
 The coordinated change covers both SDKs, federation validation, tool declarations
 and drift tests, skills and product handling. Reuse ordinary message delivery in
 both SDKs; only trace controls and trusted daemon attribution need new handling.
-Protocol 2 should carry delivery_id
-in message.deliver so recipient and trace observations correlate by ID. No
-resumable ownership capability or persisted subscription machinery is in scope.
+No delivery field, uncertain-disposition rule, hello version, resumable ownership
+capability or persisted subscription machinery changes in this slice.
 
 ## Operator logging: first implementation slice
 
@@ -296,7 +295,9 @@ outside Sessionbus or an interval it did not cover.
 - Missing copies remain explicit uncertainty; no complete-audit claim is made.
 - Mixed versions reject unsupported tracing through the capability boundary.
 
-## Related protocol-2 improvement: uncertain delivery
+## Deferred protocol-2 improvement: uncertain delivery
+
+This section is not part of the initial parent-tracing implementation.
 
 Use an explicit `uncertain` disposition for missing receipts or loss after
 submission, rather than the misleading `rejected/no_receipt` combination.

@@ -2,8 +2,8 @@
 
 "use strict";
 
-const ACTIONS = Object.freeze(["list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"]);
-const ACTION_METHODS = Object.freeze({ list: "session.list", send: "message.send", spawn: "lane.spawn", describe: "lane.describe", run: "turn.run", start: "turn.start", status: "turn.status", wait: "turn.wait", interrupt: "turn.interrupt", close: "session.close", forget: "session.close" });
+const ACTIONS = Object.freeze(["list", "send", "spawn", "describe", "trace", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"]);
+const ACTION_METHODS = Object.freeze({ list: "session.list", send: "message.send", spawn: "lane.spawn", describe: "lane.describe", trace: "trace.configure", run: "turn.run", start: "turn.start", status: "turn.status", wait: "turn.wait", interrupt: "turn.interrupt", close: "session.close", forget: "session.close" });
 
 // Run references and results belong to the resident worker, not this caller.
 class Caller {
@@ -32,6 +32,12 @@ class Caller {
    * @returns {Promise<import("./protocol").LaneSpawnResult>}
    */
   spawn(request, cancel) { return this.connection.call("lane.spawn", request, cancel); }
+  /**
+   * @param {import("./protocol").TraceConfigureRequest} request
+   * @param {AbortSignal} [cancel]
+   * @returns {Promise<import("./protocol").TraceConfigureResult>}
+   */
+  trace(request, cancel) { return this.connection.call("trace.configure", request, cancel); }
   /**
    * @param {string} sessionID
    * @param {AbortSignal} [cancel]

@@ -48,6 +48,9 @@ func (c *Caller) Describe(ctx context.Context, request LaneDescribeRequest) (Lan
 func (c *Caller) Spawn(ctx context.Context, request LaneSpawnRequest) (LaneSpawnResult, error) {
 	return callAs[LaneSpawnResult](ctx, c.call, "lane.spawn", request)
 }
+func (c *Caller) Trace(ctx context.Context, request TraceConfigureRequest) (TraceConfigureResult, error) {
+	return callAs[TraceConfigureResult](ctx, c.call, "trace.configure", request)
+}
 func (c *Caller) Resume(ctx context.Context, sessionID string) (LaneSpawnResult, error) {
 	return c.Spawn(ctx, LaneSpawnRequest{ResumeSessionID: sessionID})
 }

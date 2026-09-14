@@ -7,7 +7,7 @@ const METHODS = Object.freeze({
   "session.hello": ["SessionHelloRequest", "SessionHelloResult", "client"], "session.superseded": ["SessionSupersededRequest", "SessionSupersededResult", "daemon"],
   "session.list": ["SessionListRequest", "SessionListResult", "client"], "message.send": ["MessageSendRequest", "MessageSendResult", "client"],
   "message.deliver": ["MessageDeliverRequest", "MessageDeliverResult", "daemon"], "lane.describe": ["LaneDescribeRequest", "LaneDescribeResult", "client"],
-  "lane.spawn": ["LaneSpawnRequest", "LaneSpawnResult", "client"], "session.open": ["SessionOpenRequest", "SessionOpenResult", "daemon"],
+  "lane.spawn": ["LaneSpawnRequest", "LaneSpawnResult", "client"], "trace.configure": ["TraceConfigureRequest", "TraceConfigureResult", "client"], "session.open": ["SessionOpenRequest", "SessionOpenResult", "daemon"],
   "turn.run": ["TurnRunRequest", "RunStatus", "client"],
   "turn.start": ["TurnRunRequest", "RunRef", "client"], "turn.execute": ["ExecuteRequest", "RunRef", "daemon"],
   "turn.status": ["ReadRequest", "RunStatus", "both"], "turn.wait": ["WaitRequest", "RunStatus", "both"],

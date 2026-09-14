@@ -16,6 +16,7 @@ const replies = {
   "message.send": { message_id: "message", deliveries: [] },
   "lane.describe": { product: "example-peer", supported_open_fields: [], extra_arguments: [] },
   "lane.spawn": { session_id: "lane@local" },
+  "trace.configure": { session_id: "lane@local", mode: "events" },
   "turn.run": { session_id: "lane@local", run_id: "g/1", state: "done", result: { outcome: "completed", result: "done" } },
   "turn.interrupt": {},
   "session.close": {},
@@ -33,8 +34,9 @@ test("caller maps operations to closed wire requests", async (t) => {
     [() => caller.list({}), "session.list", {}],
     [() => caller.send({ target: "lane", message: "hello" }), "message.send", { target: "lane", message: "hello" }],
     [() => caller.describe({ product: "example-peer" }), "lane.describe", { product: "example-peer" }],
-    [() => caller.spawn({ name: "child", product: "example-peer", open: {} }), "lane.spawn", { name: "child", product: "example-peer", open: {} }],
+    [() => caller.spawn({ name: "child", product: "example-peer", open: {}, trace: "content" }), "lane.spawn", { name: "child", product: "example-peer", open: {}, trace: "content" }],
     [() => caller.resume("lane@local"), "lane.spawn", { resume_session_id: "lane@local" }],
+    [() => caller.trace({ session_id: "lane@local", mode: "events" }), "trace.configure", { session_id: "lane@local", mode: "events" }],
     [() => caller.run({ session_id: "lane@local", input: "work" }), "turn.run", { session_id: "lane@local", input: "work" }],
     [() => caller.interrupt({ session_id: "lane@local" }), "turn.interrupt", { session_id: "lane@local" }],
     [() => caller.close({ session_id: "lane@local", forget: true }), "session.close", { session_id: "lane@local", forget: true }],
@@ -44,7 +46,8 @@ test("caller maps operations to closed wire requests", async (t) => {
   const actions = [
     ["list", {}, "session.list", {}],
     ["send", { target: "lane", message: "hello" }, "message.send", { target: "lane", message: "hello" }],
-    ["spawn", { name: "child", product: "example-peer", open: {} }, "lane.spawn", { name: "child", product: "example-peer", open: {} }],
+    ["spawn", { name: "child", product: "example-peer", open: {}, trace: "events" }, "lane.spawn", { name: "child", product: "example-peer", open: {}, trace: "events" }],
+    ["trace", { session_id: "lane@local", mode: "content" }, "trace.configure", { session_id: "lane@local", mode: "content" }],
     ["describe", { product: "example-peer" }, "lane.describe", { product: "example-peer" }],
     ["run", { session_id: "lane@local", input: "work" }, "turn.run", { session_id: "lane@local", input: "work" }],
     ["interrupt", { session_id: "lane@local" }, "turn.interrupt", { session_id: "lane@local" }],
@@ -54,9 +57,10 @@ test("caller maps operations to closed wire requests", async (t) => {
   for (const [action, args, method, params] of actions) { await caller.action(action, args); assert.deepEqual(seen.shift(), [method, params]); }
   await assert.rejects(caller.spawn({ resume_session_id: "lane@local", name: "child" }), (error) => error.message === `LaneSpawnRequest: "name" is not allowed with "resume_session_id"`);
   assert.equal(seen.length, 0);
-  assert.deepEqual(ACTIONS, ["list", "send", "spawn", "describe", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"]);
+  assert.deepEqual(ACTIONS, ["list", "send", "spawn", "describe", "trace", "run", "start", "wait", "status", "interrupt", "close", "forget", "ack"]);
   await assert.rejects(caller.action("unknown", {}), /unknown action/);
   await assert.rejects(caller.action("list", { extra: true }), /SessionListRequest: "extra" is not allowed/);
+  await assert.rejects(caller.action("trace", { session_id: "lane@local", mode: "all" }), /TraceConfigureRequest: "mode" must be one of/);
   await assert.rejects(caller.action("status", { turn_id: "missing", extra: true }), /ReadRequest:/);
 });
 
@@ -103,4 +107,3 @@ test("crossed rehello preserves the fixture's newest identity", async (t) => {
   await daemon.result(corrective, {}); await first;
   assert.deepEqual([peer.identity.name, peer.identity.info.nested.value], ["second", "second"]);
 });
-

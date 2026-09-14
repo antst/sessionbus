@@ -31,6 +31,7 @@ var methodCodecs = map[string]methodCodec{
 	"message.deliver":    {"MessageDeliverRequest", "MessageDeliverResult", newValue[DeliveryRequest], newValue[DeliveryReceipt], false, true},
 	"lane.describe":      {"LaneDescribeRequest", "LaneDescribeResult", newValue[LaneDescribeRequest], newValue[LaneDescribeResult], true, false},
 	"lane.spawn":         {"LaneSpawnRequest", "LaneSpawnResult", newValue[LaneSpawnRequest], newValue[LaneSpawnResult], true, false},
+	"trace.configure":    {"TraceConfigureRequest", "TraceConfigureResult", newValue[TraceConfigureRequest], newValue[TraceConfigureResult], true, false},
 	"session.open":       {"SessionOpenRequest", "SessionOpenResult", newValue[OpenRequest], newValue[OpenResult], false, true},
 	"turn.run":           {"TurnRunRequest", "RunStatus", newValue[TurnRunRequest], newValue[RunStatus], true, false},
 	"turn.start":         {"TurnRunRequest", "RunRef", newValue[TurnRunRequest], newValue[RunRef], true, false},

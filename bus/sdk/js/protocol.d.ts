@@ -181,10 +181,19 @@ export interface LaneSpawnRequest {
   resume_session_id?: string;
   extra_groups?: string[];
   open?: OpenOptions;
+  trace?: string;
 }
 export interface LaneSpawnResult {
   policy?: LanePolicy;
   session_id: string;
+}
+export interface TraceConfigureRequest {
+  session_id: string;
+  mode: string;
+}
+export interface TraceConfigureResult {
+  session_id: string;
+  mode: string;
 }
 export interface SessionTarget {
   session_id: string;

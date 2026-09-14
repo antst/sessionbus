@@ -239,11 +239,20 @@ type LaneSpawnRequest struct {
 	ResumeSessionID string       `json:"resume_session_id,omitempty"`
 	ExtraGroups     []string     `json:"extra_groups,omitempty"`
 	Open            *OpenOptions `json:"open,omitempty"`
+	Trace           string       `json:"trace,omitempty"`
 }
 
 type LaneSpawnResult struct {
 	Policy    *LanePolicy `json:"policy,omitempty"`
 	SessionID string      `json:"session_id"`
+}
+type TraceConfigureRequest struct {
+	SessionID string `json:"session_id"`
+	Mode      string `json:"mode"`
+}
+type TraceConfigureResult struct {
+	SessionID string `json:"session_id"`
+	Mode      string `json:"mode"`
 }
 type SessionTarget struct {
 	SessionID string `json:"session_id"`
