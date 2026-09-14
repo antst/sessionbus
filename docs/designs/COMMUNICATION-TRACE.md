@@ -75,6 +75,31 @@ stop/checkpoint can bound what was flushed; a missing clean end, retention expir
 or gap makes completeness unknown. A log cannot prove absence of communications
 outside Sessionbus or an interval it did not cover.
 
+## One copy when two traced children talk
+
+For a common parent, a logical send has one message header and one content body,
+identified by message_id. matched_children contains the union of traced source
+and recipient children; matching both endpoints does not create another copy.
+Dispatch and receipt records refer to that header by message_id/delivery_id and
+never repeat its body. Two deliberate sends with identical text have different
+message IDs and remain distinct. Group fan-out has separate delivery records per
+recipient, not another content copy for each recipient.
+
+Pagination, catch-up and live push share the same logical IDs and dedup contract;
+normal continuation must not repeat content at a page or host boundary. An
+explicit reread of an older cursor can naturally return the same existing event.
+Late participant/receipt information is a metadata update, not another content
+message. Event-time parent policy still controls disclosure: content is permitted
+if at least one matched child was content-enabled; otherwise it is stripped.
+Do not disclose untraced recipient details just because another recipient is traced.
+
+Source and destination daemon logs can each retain their own physical observation
+for troubleshooting. The parent's federated view coalesces those observations by
+logical ID, while retaining per-host cursors and gap information. Protocol 2 should
+carry delivery_id in message.deliver (it currently exists only in sender results)
+so adapter, destination and parent records can correlate without guessing from
+text or timestamps. This is part of the acceptance tests, not an optional UI tidy-up.
+
 ## Parent tracing: proposed protocol extension
 
 Expose `trace: off | events | content` at child spawn/resume, defaulting to off.
