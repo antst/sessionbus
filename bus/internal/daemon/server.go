@@ -12,11 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/internal/conn"
 	"github.com/antst/sessionbus/bus/sdk/go/socketpath"
 )
 
 type Config struct {
+	CommsLog    commslog.Options
 	now         func() time.Time
 	policyTimer func(time.Duration) (<-chan time.Time, func())
 	SocketPath  string
@@ -28,6 +30,7 @@ type Config struct {
 }
 
 type Daemon struct {
+	comms            *commslog.Logger
 	config           Config
 	host             string
 	table            *table
@@ -74,6 +77,22 @@ func Start(config Config) (*Daemon, error) {
 	if len(config.Products) == 0 {
 		config.Products = nil
 	}
+	config.CommsLog.Host = config.Host
+	config.CommsLog.Incarnation = randomID("daemon")
+	var logger *commslog.Logger
+	if config.CommsLog.Mode != "" && config.CommsLog.Mode != commslog.Off {
+		var err error
+		logger, err = commslog.Open(config.CommsLog)
+		if err != nil {
+			return nil, err
+		}
+	}
+	started := false
+	defer func() {
+		if !started && logger != nil {
+			_ = logger.Close()
+		}
+	}()
 	store, rows, err := openTable(config.TablePath)
 	if err != nil {
 		return nil, err
@@ -90,7 +109,7 @@ func Start(config Config) (*Daemon, error) {
 		_ = listener.Close()
 		return nil, err
 	}
-	d := &Daemon{config: config, host: config.Host, table: store, listener: listener,
+	d := &Daemon{comms: logger, config: config, host: config.Host, table: store, listener: listener,
 		shutdown: make(chan struct{}), done: make(chan struct{}), acceptDone: make(chan struct{})}
 	d.directory = newDirectory(d, rows)
 	if err = d.startOperator(); err != nil {
@@ -106,6 +125,8 @@ func Start(config Config) (*Daemon, error) {
 			return nil, err
 		}
 	}
+	started = true
+	d.logEvent(commslog.Event{Type: commslog.Lifecycle, Method: "daemon.start"})
 	go d.accept()
 	return d, nil
 }
@@ -165,6 +186,11 @@ func (d *Daemon) Close() error {
 	<-d.acceptDone
 	d.group.Wait()
 	_ = os.Remove(d.config.SocketPath)
+	d.logEvent(commslog.Event{Type: commslog.Lifecycle, Method: "daemon.stop"})
+	var logErr error
+	if d.comms != nil {
+		logErr = d.comms.Close()
+	}
 	close(d.done)
-	return nil
+	return logErr
 }

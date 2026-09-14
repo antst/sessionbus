@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
@@ -163,6 +164,7 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 		s.reject(frame, protocol.InvalidFrame)
 		return
 	}
+	s.logRun(commslog.TurnReady, value.RunID, commslog.Settled, value.Outcome)
 	s.runID = ""
 	s.daemon.directory.finishRun(s.identity, s)
 	policy := s.identity.row.Policy
@@ -178,7 +180,7 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 			target = policy.OwnerSessionID
 		}
 		if target != "" {
-			body := fmt.Sprintf("Lane %s run %s is %s. Collect with turn.wait (session_id=%s, run_id=%s), then acknowledge with turn.ack after collecting.", value.SessionID, value.RunID, value.State, value.SessionID, value.RunID)
+			body := fmt.Sprintf("Lane %s run %s is %s. Collect with the public wait action (session_id=%s, run_id=%s), then use the public ack action after collecting.", value.SessionID, value.RunID, value.State, value.SessionID, value.RunID)
 			wait := s.daemon.directory.forwardLocal(s.federationCaller(), s.identity, "message.send", &protocol.MessageSendRequest{Target: target, Message: body}, "")
 			s.owned++
 			go func() { _, _ = wait(s.identity.done); s.inbox <- replyEvent{} }()

@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
@@ -105,6 +106,7 @@ func (s *session) finishOpen(frame protocol.Frame) {
 		return
 	}
 	s.identity, s.committed = item, true
+	s.logSession(commslog.Connected)
 	s.launch.timer.Stop()
 	s.launch.reply <- answer{value: &protocol.LaneSpawnResult{SessionID: item.row.SessionID, Policy: cloneRow(item.row).Policy}}
 }

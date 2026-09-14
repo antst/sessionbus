@@ -64,7 +64,7 @@ if [ "$role" = host ]; then
  [ -f "$config/host.key" ] && [ ! -L "$config/host.key" ] || { echo 'Host key is not a regular owned file' >&2; exit 1; }
  chmod 600 "$config/host.key"
  if [ ! -e "$config/service.env" ]; then
-  printf '# Advertised products; install their commands separately on the service PATH.\nSESSIONBUS_PRODUCTS=claude-peer,codex-peer,grok-peer,kilo-peer,omp-peer,opencode-peer,pi-peer,qwen-peer,dashi\n# Set SESSIONBUS_HOST and SESSIONBUS_HUB to join a hub.\nSESSIONBUS_HUB_SECRET_FILE="%s/host.key"\n' "$config" > "$config/service.env"
+  printf '# Advertised products; install their commands separately on the service PATH.\nSESSIONBUS_PRODUCTS=claude-peer,codex-peer,grok-peer,kilo-peer,omp-peer,opencode-peer,pi-peer,qwen-peer,dashi\n# Optional communication log: off, metadata, or content.\nSESSIONBUS_COMMS_LOG=off\n# Set SESSIONBUS_HOST and SESSIONBUS_HUB to join a hub.\nSESSIONBUS_HUB_SECRET_FILE="%s/host.key"\n' "$config" > "$config/service.env"
  fi
 else
  if [ ! -e "$config/hub.json" ]; then (set -C; printf '{}\n' > "$config/hub.json"); fi

@@ -334,7 +334,8 @@ func TestPolicyRealWorkerWakePointerAndGroupCollection(t *testing.T) {
 		t.Fatalf("collected %#v", status)
 	}
 	pointer := <-owner.deliveries
-	if pointer.From.SessionID != lane.SessionID || !strings.Contains(pointer.Body, status.RunID) || !strings.Contains(pointer.Body, "turn.ack") || strings.Contains(pointer.Body, "hello") {
+	wantPointer := fmt.Sprintf("Lane %s run %s is %s. Collect with the public wait action (session_id=%s, run_id=%s), then use the public ack action after collecting.", status.SessionID, status.RunID, status.State, status.SessionID, status.RunID)
+	if pointer.From.SessionID != lane.SessionID || pointer.Body != wantPointer || strings.Contains(pointer.Body, "turn.wait") || strings.Contains(pointer.Body, "turn.ack") || strings.Contains(pointer.Body, "hello") {
 		t.Fatalf("completion pointer %#v", pointer)
 	}
 	if code := rpcCode(hidden.call("turn.status", protocol.ReadRequest{SessionID: lane.SessionID}, &protocol.RunStatus{})); code != protocol.UnknownSession {

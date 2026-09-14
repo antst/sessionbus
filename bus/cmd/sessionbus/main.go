@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/internal/daemon"
 	"github.com/antst/sessionbus/bus/internal/federation"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
@@ -90,6 +91,22 @@ func parseTo(arguments []string, output io.Writer) (daemon.Config, error) {
 	set.Usage = func() { fmt.Fprint(output, daemonHelp); set.PrintDefaults() }
 	configuration := daemon.Config{}
 	products := ""
+	logMode := os.Getenv("SESSIONBUS_COMMS_LOG")
+	if logMode == "" {
+		logMode = "off"
+	}
+	logDir := os.Getenv("SESSIONBUS_COMMS_LOG_DIR")
+	if logDir == "" {
+		logDir = filepath.Join(root, "comms")
+	}
+	var logSessions, logGroups string
+	set.StringVar(&logMode, "comms-log", logMode, "communication log: off, metadata, or content (SESSIONBUS_COMMS_LOG)")
+	set.StringVar(&logDir, "comms-log-dir", logDir, "private rotated JSONL directory (SESSIONBUS_COMMS_LOG_DIR)")
+	set.Int64Var(&configuration.CommsLog.MaxFileBytes, "comms-log-max-bytes", 16<<20, "maximum bytes per communication log file")
+	set.IntVar(&configuration.CommsLog.MaxFiles, "comms-log-files", 4, "retained communication log files, including current")
+	set.IntVar(&configuration.CommsLog.QueueBytes, "comms-log-queue-bytes", 4<<20, "maximum queued communication log bytes")
+	set.StringVar(&logSessions, "comms-log-sessions", "", "optional comma-separated canonical session IDs to include")
+	set.StringVar(&logGroups, "comms-log-groups", "", "optional comma-separated groups to include")
 	set.StringVar(&configuration.SocketPath, "socket", socket, "unix socket path")
 	set.StringVar(&configuration.TablePath, "table", filepath.Join(root, "sessions.json"), "durable session table")
 	set.StringVar(&configuration.Host, "host", os.Getenv("SESSIONBUS_HOST"), "local host name")
@@ -118,6 +135,20 @@ func parseTo(arguments []string, output io.Writer) (daemon.Config, error) {
 		}
 		configuration.HubSecret = strings.TrimSpace(string(b))
 	}
+	switch commslog.Mode(logMode) {
+	case commslog.Off, commslog.Metadata, commslog.Content:
+	default:
+		return daemon.Config{}, fmt.Errorf("invalid comms-log mode %q", logMode)
+	}
+	configuration.CommsLog.Mode = commslog.Mode(logMode)
+	configuration.CommsLog.Path = filepath.Join(logDir, "sessionbus.jsonl")
+	if logSessions != "" {
+		configuration.CommsLog.Sessions = strings.Split(logSessions, ",")
+	}
+	if logGroups != "" {
+		configuration.CommsLog.Groups = strings.Split(logGroups, ",")
+	}
+	configuration.CommsLog.OnError = func(err error) { fmt.Fprintf(os.Stderr, "Sessionbus communication log stopped: %v\n", err) }
 	if products != "" {
 		configuration.Products = strings.Split(products, ",")
 	}
@@ -166,6 +197,15 @@ This advertisement does not restrict lane launches or install product binaries.
 Prefer -hub-secret-file over placing a secret in process arguments.
 Hub outages do not stop local service: the daemon retries its connection with
 bounded backoff. Lost remote operations fail without automatic replay.
+
+Communication logging defaults to off. Set SESSIONBUS_COMMS_LOG=metadata or
+content in service.env and restart the daemon. One rotated JSONL stream per host
+records explicit from/to identities and correlated message/delivery IDs. Content
+mode also retains message text; native prompts and Run result bodies are omitted. Default retention is
+four files of 16 MiB each under the state directory/comms. The optional session
+and group filters select events; they do not create duplicate per-group files.
+Logging is diagnostic: queue overflow is recorded as gaps; disk errors stop the
+logger and are reported on stderr. A crash can lose the unwritten tail.
 
 Daemon flags:
 `

@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/commslog"
 	"github.com/antst/sessionbus/bus/internal/conn"
 	"github.com/antst/sessionbus/bus/internal/federation"
 	"github.com/antst/sessionbus/bus/internal/structuredprocess"
@@ -43,6 +44,7 @@ type replyEvent struct {
 type supersedeEvent struct{}
 
 type session struct {
+	commsRequests              map[int64]commsRequest
 	runID, runGeneration       string
 	runSequence                uint64
 	deadline, previousDeadline time.Time
@@ -306,6 +308,7 @@ func (s *session) issue(request routedRequest) {
 	}
 	if request.runID != "" {
 		s.daemon.directory.admitted(s.identity, "turn.execute")
+		s.logRun(commslog.Method(request.method), request.runID, commslog.Running, "")
 	}
 	s.pending[s.nextOut] = request
 }
@@ -371,12 +374,14 @@ func (s *session) connectionClosed() {
 	if s.closed {
 		return
 	}
+	s.logSession(commslog.Disconnected)
 	s.stopping, s.closed = true, true
 	s.stopAutoClose()
 	s.wire.OwnerClosed()
 	s.daemon.directory.detach(s.identity, s)
 	s.settlePending(protocol.NotConnected)
-	for id := range s.requests {
+	for id, state := range s.requests {
+		s.logResult(state.frame, nil, protocol.NotConnected)
 		delete(s.requests, id)
 	}
 }
@@ -406,6 +411,7 @@ func (s *session) drain() bool {
 }
 
 func (s *session) reject(frame protocol.Frame, code int) {
+	s.logResult(frame, nil, code)
 	if s.forwarded != nil {
 		s.forwarded <- rpcReply(frame.Method, answer{code: code})
 		return
@@ -421,6 +427,7 @@ func (s *session) reject(frame protocol.Frame, code int) {
 }
 
 func (s *session) result(frame protocol.Frame, value any) {
+	s.logResult(frame, value, 0)
 	if s.forwarded != nil {
 		s.forwarded <- rpcReply(frame.Method, answer{value: value})
 		return
@@ -432,6 +439,7 @@ func (s *session) result(frame protocol.Frame, value any) {
 }
 
 func (s *session) error(frame protocol.Frame, code int, data any) {
+	s.logResult(frame, nil, code)
 	if s.forwarded != nil {
 		s.forwarded <- rpcReply(frame.Method, answer{code: code, data: data})
 		return
@@ -446,6 +454,7 @@ func (s *session) supersede() {
 	if s.stopping {
 		return
 	}
+	s.logSession(commslog.Superseded)
 	s.stopping = true
 	s.detachRequests(protocol.Superseded)
 	s.nextOut++
