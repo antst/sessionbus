@@ -129,9 +129,11 @@ limitation behind a group filter or a claimed owner_session_id string.
 The current protocol's hello and request schemas are closed. Adding
 supports_trace to old hello frames is not backward compatible. Plan an explicit
 protocol-2 capability boundary: new daemons retain protocol-1 service, while
-trace-aware attachments negotiate protocol 2. Old daemons reject an explicit
-protocol-2 attempt with a clear unsupported-version error; never silently retry
-it as ordinary message delivery. The coordinated change includes both SDKs,
+trace-aware attachments negotiate protocol 2. Old daemons currently reject an
+explicit protocol-2 hello with generic invalid_hello and close the connection.
+The client must explain that protocol-2 negotiation was rejected (including the
+possibility of an older daemon), not invent a specific server error or silently
+retry as ordinary message delivery. The coordinated change includes both SDKs,
 federation validation, tool declarations and their drift tests, skills, and
 product notification handling. Trace policy/queries are advertised only where
 supported.
@@ -150,3 +152,16 @@ supported.
   explicitly limit completeness; forget does not erase retained observations.
 - Mixed protocol versions reject unsupported tracing; no new field is silently
   sent through an old closed schema.
+
+## Related protocol-2 improvement: uncertain delivery
+
+Use an explicit `uncertain` disposition for missing receipts or loss after
+submission, rather than the misleading `rejected/no_receipt` combination.
+Reserve `rejected` for observed refusal or proven failure before submission.
+Keep `written` as its existing local-write claim, not consumption. A protocol-2
+reason vocabulary should distinguish known non-submission from post-dispatch
+loss without guessing which native turn consumed a message. The compatible
+protocol-1 fix can distinguish proven `not_submitted` now, while older peers
+still retain the documented `no_receipt` uncertainty. This amendment requires
+coordinated daemon, SDK, federation and tool validators; it is proposed here,
+not silently added to protocol 1.
