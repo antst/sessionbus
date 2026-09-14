@@ -481,11 +481,6 @@ func decodePendingReply(call pendingCall, frame protocol.Frame) (Reply, bool) {
 	return Reply{Result: append(json.RawMessage(nil), frame.Result...)}, err == nil
 }
 
-func validReply(method string, frame protocol.Frame) bool {
-	_, ok := decodePendingReply(pendingCall{method: method}, frame)
-	return ok
-}
-
 func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, origin *hostLink, call incomingForward) {
 	if s.links[origin.host] != origin {
 		return
