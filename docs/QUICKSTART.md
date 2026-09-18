@@ -53,7 +53,10 @@ for native naming, activation and delivery differences.
 In each terminal, ask:
 
 > Use the Sessionbus list action. Show my self_info.session_id and the other
-> visible sessions with their IDs and names. Do not send anything yet.
+> visible sessions with their IDs and names. In this turn only list; do not
+> send a message. If you later receive a Sessionbus message asking you to
+> reply, use Sessionbus to reply as requested, subject to native tool
+> approval.
 
 The two sessions should see each other. Use the IDs returned by the tool;
 names may not appear until the native product publishes them. `self_info`
