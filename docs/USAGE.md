@@ -5,7 +5,7 @@ and exchange messages. When you need to open and manage another session, it join
 that same communication network. Existing orchestration and native subagents can
 continue alongside it.
 
-Start with the [two-session quickstart](QUICKSTART.md). This page explains the
+Start with the [two-session quickstart](../QUICKSTART.md). This page explains the
 relationships and choices behind more involved uses; the
 [protocol reference](../bus/docs/PROTOCOL.md) is authoritative for wire behavior.
 

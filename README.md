@@ -59,7 +59,7 @@ live Workers hold unacknowledged results. Optional communication logs are bounde
 diagnostics, not a delivery store. Deployment assumes a trusted user/host
 network; federation uses TLS, and the hub can read routed messages.
 
-[Start with two sessions](docs/QUICKSTART.md) ·
+[Start with two sessions](QUICKSTART.md) ·
 [Scenarios, concepts and FAQ](docs/USAGE.md) ·
 [Protocol reference](bus/docs/PROTOCOL.md)
 
