@@ -27,6 +27,80 @@ such as `-g team`. Exact session IDs are canonical; names can be convenient, but
 ambiguous names are rejected. Direct targets, explicit target lists and group
 messages use the same bus.
 
+## Connect teams through overlapping groups
+
+A peer can belong to multiple groups. For example, frontend sessions join
+`frontend`, backend sessions join `backend`, and one liaison from each team
+also joins `coordination`:
+
+| Participant | Named groups | Visible participants from the other team |
+| --- | --- | --- |
+| Frontend worker | `frontend` | None |
+| Frontend liaison | `frontend`, `coordination` | Backend liaison |
+| Backend liaison | `backend`, `coordination` | Frontend liaison |
+| Backend worker | `backend` | None |
+
+This assumes no other shared groups or parent-lane relationships across the
+boundary. The liaisons can align directly without
+making the rest of either team visible across the boundary. Membership is not
+transitive: sharing `coordination` with a backend liaison does not give the
+frontend liaison membership in `backend`. Knowing a hidden session's ID does
+not bypass visibility. Group memberships are declared by peers and spawning
+callers; the daemon accepts those declarations. This organizes trusted
+participants, not isolation against someone who declares another group
+(see [trust](#receipts-failures-and-trust)).
+
+A send to `backend` from the frontend liaison selects only the backend liaison,
+because group addressing filters sessions already visible to the sender.
+
+An independently started Codex peer joins both groups with repeated flags:
+
+```sh
+codex-peer -g frontend -g coordination -n frontend-liaison
+codex-peer -g backend -g coordination -n backend-liaison
+```
+
+Run these in separate terminals; team-only peers use only their own team's
+named group. The teams can contain peers and managed lanes. For a new lane,
+choose additional memberships explicitly with `spawn.extra_groups`, such as
+`["frontend"]` or `["frontend", "coordination"]`; the lane does not inherit its
+parent's named groups. Lanes with the same parent also share its private group,
+so named team groups alone do not separate those siblings.
+
+Repeat the pattern for a virtual organization: specialists share team groups,
+team leads also join department groups, and department heads also join an
+organization-wide coordination group. Each participant keeps its own context
+and tools; membership determines its direct contacts, while the participants
+or an external coordinator decide how work and information move between levels.
+
+```mermaid
+flowchart TB
+    O["Organization coordinator<br/>coordination"]
+    FH["Frontend head<br/>frontend-leads + coordination"]
+    BH["Backend head<br/>backend-leads + coordination"]
+    FL["Frontend team lead<br/>frontend + frontend-leads"]
+    BL["Backend team lead<br/>backend + backend-leads"]
+    F["Frontend specialists<br/>frontend"]
+    B["Backend specialists<br/>backend"]
+    O <-->|coordination| FH
+    O <-->|coordination| BH
+    FH <-->|coordination| BH
+    FH <-->|frontend-leads| FL
+    BH <-->|backend-leads| BL
+    FL <-->|frontend| F
+    BL <-->|backend| B
+```
+
+Each box shows a participant's role and named memberships; a specialists box
+can represent several sessions with that membership. Lines mean shared-group
+communication. Lead and head are roles chosen by the organization, with no
+special bus privileges. The coordinator can contact both department heads;
+it cannot directly see specialists who only share their team's group.
+
+Shared groups authorize ordinary lane controls as well as discovery and
+messaging; lifetime and tracing authority remain separate. This limits direct
+bus access, not what a liaison can deliberately relay to another group.
+
 ## Ongoing work with lanes
 
 A *lane* is a managed native session attached through a Worker. A *Run* is one

@@ -51,7 +51,8 @@ Participants can be local or on federated hosts. Groups govern visibility and
 ordinary control; lifetime ownership and live parent tracing have separate
 rules. A lane joins its parent's private group, not every group the parent
 belongs to. Native subagents become separately addressable only where their
-integration connects them.
+integration connects them. A peer can join several groups: [team liaisons](docs/USAGE.md#connect-teams-through-overlapping-groups)
+can share `coordination` without joining each other's whole team.
 
 **Limits:** no durable offline inbox or automatic replay; a delivery receipt is
 not proof of consumption. Native products keep their transcripts and permissions;
