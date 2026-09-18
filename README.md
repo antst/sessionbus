@@ -1,21 +1,100 @@
 # Sessionbus
 
-Sessionbus is a local and federated session router. This repository contains
-the `sessionbus` daemon, the `sessionbus-hub` federation router, the
-`sessionbus-call` reference caller, and the `example-peer` protocol worker.
+**Let your sessions and tools work together, on one machine or across hosts.**
+
+Two independently started sessions can ask each other questions, exchange findings
+and receive corrections during work where their native products support it. They
+keep their own tools and context. You do not have to relay every exchange between
+terminals.
+
+Sessionbus is an open protocol and a user-run session bus. It supplies discovery,
+addressed messaging and optional managed-session controls. Two sessions of the
+same product use the same bus as sessions from different products; a participant
+can also be a tool or another program implementing the protocol.
+
+## What can you do with it?
+
+- **Connect colleagues you already have.** Start sessions in a shared group
+  (`-g team`) so they can discover and message one another. No parent or central
+  AI coordinator is required.
+- **Bring in a specialist and keep it involved.** Open a managed native session,
+  or *lane*, locally or on another host. It can consult other visible peers,
+  receive new evidence and continue through follow-up Runs in its native context.
+  Choose how idle messages, owner exit, notifications and retirement work.
+- **Let programs participate.** A script can coordinate sessions; a tool or
+  service can implement a resident peer or a managed Worker. Public Go and
+  JavaScript SDKs and a non-model reference Worker are provided. Each external
+  service still needs an integration.
+- **Keep your orchestration.** Use the bus underneath your framework or alongside
+  native teams and subagents. Your system decides the workflow; the bus supplies
+  communication and session controls where you need them.
+
+These uses can coexist. A managed specialist can ask an independently started
+reviewer for clarification instead of only returning an answer to its launcher.
+Communication is also what makes richer managed-session use possible: the work
+can change through questions and new evidence, and the conversation can continue
+through multiple Runs.
+
+```mermaid
+flowchart LR
+    A[Existing session] <-->|messages| B[Existing reviewer]
+    A -.->|opens and manages| C[Managed specialist]
+    A <-->|messages| C
+    C <-->|messages| B
+    T[Tool or service integration] <-->|messages| A
+    T <-->|messages| C
+    O[Another authorized session] -.->|collects or controls| C
+```
+
+This is a relationship diagram, not a mandatory coordinator or scheduler.
+Participants can be local or on federated hosts. Groups govern visibility and
+ordinary control; lifetime ownership and live parent tracing have separate
+rules. A lane joins its parent's private group, not every group the parent
+belongs to. Native subagents become separately addressable only where their
+integration connects them.
+
+**Limits:** no durable offline inbox or automatic replay; a delivery receipt is
+not proof of consumption. Native products keep their transcripts and permissions;
+live Workers hold unacknowledged results. Optional communication logs are bounded
+diagnostics, not a delivery store. Deployment assumes a trusted user/host
+network; federation uses TLS, and the hub can read routed messages.
+
+[Start with two sessions](docs/QUICKSTART.md) ·
+[Scenarios, concepts and FAQ](docs/USAGE.md) ·
+[Protocol reference](bus/docs/PROTOCOL.md)
+
+## See it working
+
+The [92-second native terminal demo](https://x.com/iamantst/status/2100973895377371533)
+shows Codex, Claude Code and Grok on three hosts exchanging a review and tests.
+The Codex session runs the tests, then opens remote Claude and Grok lanes and
+collects their results through the shared contract. Waiting intervals are cut.
+
+This is one use of the bus, not a coding benchmark or its full scope. The same
+contract also connects sessions of the same product, with no parent relationship.
+
+Six established adapters cover Claude Code, Codex, Grok, Qwen, OpenCode and Kilo;
+Pi and OMP are two additional preview integrations. DSH integration has a
+separate, ongoing release path. Native products, authentication and permissions
+remain prerequisites. See [sessionbus-peers](https://github.com/antst/sessionbus-peers)
+for installers and per-product limits.
+
+This repository contains the `sessionbus` daemon, `sessionbus-hub` federation
+router, `sessionbus-call` reference caller, `example-peer` Worker and public SDKs.
+A hub is optional for local use and required for the current cross-host path.
 
 ## Install binaries
 
 Install the normal host (daemon, reference caller and example worker; no hub):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/develop/deploy/install-host.sh | sh
+curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/main/deploy/install-host.sh | sh
 ```
 
 Install only the federation hub:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/develop/deploy/install-hub.sh | sh
+curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/main/deploy/install-hub.sh | sh
 ```
 
 Linux and macOS, amd64 and arm64 are supported. Run as your normal login user;
@@ -33,14 +112,14 @@ using its `/releases/latest/download/` endpoint. Prereleases are not selected.
 To pin a published version, set the variable on **sh**, not curl:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/develop/deploy/install-host.sh | SESSIONBUS_VERSION=vX.Y.Z sh
+curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/main/deploy/install-host.sh | SESSIONBUS_VERSION=vX.Y.Z sh
 ```
 
 Replace `vX.Y.Z` with an actual [release tag](https://github.com/antst/sessionbus/releases).
 Development builds are opt-in: use `SESSIONBUS_VERSION=development sh` in the
 same pipeline. The rolling development prerelease follows tested `develop`
 builds and can change between installations.
-See the [v0.5.2 release notes](docs/releases/v0.5.2.md) for the current patch,
+See the [v0.5.4 release notes](docs/releases/v0.5.4.md) for tracing and communication logging,
 and [v0.5.1](docs/releases/v0.5.1.md) for federation upgrade order.
 `SESSIONBUS_DOWNLOAD_ROOT` can select a mirror containing the same archives and
 `SHA256SUMS`. Missing releases or checksum failures stop before installation.
