@@ -92,6 +92,10 @@ Install the normal host (daemon, reference caller and example worker; no hub):
 curl -fsSL https://raw.githubusercontent.com/antst/sessionbus/main/deploy/install-host.sh | sh
 ```
 
+Run `sessionbus --version` (also `-version` or `-v`) to report the binary's
+release and source revision without starting the daemon. Untagged builds report
+`development`; ordinary Go builds without VCS metadata report revision `unknown`.
+
 Install only the federation hub:
 
 ```sh

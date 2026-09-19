@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -18,6 +19,33 @@ import (
 	"github.com/antst/sessionbus/bus/internal/federation"
 	sessionkit "github.com/antst/sessionbus/bus/sdk/go"
 )
+
+// Release archives set these values at build time. Ordinary go builds retain
+// Go's VCS metadata and identify themselves as development builds.
+var buildVersion = "development"
+var buildRevision string
+
+func versionString() string {
+	revision := buildRevision
+	if revision == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" {
+					revision = setting.Value
+				}
+			}
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.modified" && setting.Value == "true" && revision != "" {
+					revision += "-dirty"
+				}
+			}
+		}
+	}
+	if revision == "" {
+		revision = "unknown"
+	}
+	return fmt.Sprintf("sessionbus %s (%s)", buildVersion, revision)
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -31,6 +59,10 @@ func run(arguments []string) error {
 }
 
 func runTo(arguments []string, stdout io.Writer) error {
+	if len(arguments) == 1 && (arguments[0] == "-version" || arguments[0] == "--version" || arguments[0] == "-v") {
+		_, err := fmt.Fprintln(stdout, versionString())
+		return err
+	}
 	if len(arguments) > 0 && arguments[0] == "help" {
 		switch {
 		case len(arguments) == 1:
@@ -172,6 +204,7 @@ Usage:
   sessionbus [daemon flags]           Run the daemon in the foreground
   sessionbus roster [--all] [--json] [--local]  Inspect online peers and active lanes
   sessionbus secret                  Generate a private federation join secret
+  sessionbus -version                Show the release and source revision
   sessionbus help [roster|secret]     Show command help
 
 Examples:
