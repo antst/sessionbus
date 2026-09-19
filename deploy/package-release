@@ -12,7 +12,12 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' 0
 trap 'exit 1' HUP INT TERM
 revision=$(git rev-parse HEAD)
-version=$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || printf '%s' development)
+version=${SESSIONBUS_BUILD_VERSION:-$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || printf '%s' development)}
+if [ "$version" != development ] &&
+   ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+ echo 'Invalid build version: expected development or vMAJOR.MINOR.PATCH' >&2
+ exit 1
+fi
 build_revision=$revision
 if [ -n "$(git status --porcelain)" ]; then
  build_revision="$revision-dirty"
