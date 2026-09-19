@@ -44,6 +44,11 @@ export interface LanePolicy {
   notify: boolean;
   notify_target?: string;
   owner_session_id?: string;
+  /**
+   * Trace is the live mode reported only in the spawning parent's response.
+   * Absence means unreported, not off; it is never durable lane policy.
+   */
+  trace?: string;
 }
 export interface RunRef {
   session_id: string;

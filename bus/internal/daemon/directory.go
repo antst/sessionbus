@@ -277,6 +277,30 @@ func (d *directory) revokeLaunch(start *launch) bool {
 	return true
 }
 
+// Project committed live trace state into this parent's response only. The
+// stored policy, worker-open policy and roster projections remain unchanged.
+func (d *directory) spawnResult(start *launch, owner *session) *protocol.LaneSpawnResult {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	item := start.entry
+	result := &protocol.LaneSpawnResult{SessionID: item.row.SessionID, Policy: cloneRow(item.row).Policy}
+	parent := start.parent
+	if result.Policy == nil || d.closing || d.entries[item.row.SessionID] != item || item.attachment != owner || item.claimed || parent == nil || item.parent != parent || parent.ended {
+		return result
+	}
+	if parent.host == "" {
+		current := d.entries[parent.id]
+		if current == nil || current.lifetime != parent || current.attachment == nil {
+			return result
+		}
+	}
+	result.Policy.Trace = item.traceMode
+	if result.Policy.Trace == "" {
+		result.Policy.Trace = "off"
+	}
+	return result
+}
+
 func (d *directory) releaseLaunch(start *launch) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -51,6 +51,14 @@ The initial setting at spawn/resume is `trace: off | events | content`.
 while it runs. Configuration returns the canonical child ID and effective mode. Enabling applies to subsequent observations; there is no retroactive
 exposure. Resuming a lane does not inherit a former parent's trace setting.
 
+0.5.5 correction (#80): after publication, the successful spawn/resume response
+to the same live parent reports `policy.trace` from committed live state under
+the directory lock. Omitted trace reports `off`. This is a response-only copy;
+stored rows, worker-open policy and list projections do not gain trace state.
+The field is optional for old responses, not evidence of `off` when absent.
+Closed Go/JS result decoders and forwarding daemons require the updated schema;
+this JSON addition is not automatically compatible with older consumers.
+
 Trace ownership is independent of persistent/notify/auto-close policy. Persistent
 children can be traced without tying their lifetime to the parent. Only the
 validated parent can configure tracing; group membership or a claimed session ID

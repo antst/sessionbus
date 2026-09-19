@@ -220,6 +220,13 @@ This also works for persistent children, but the tracing relationship itself
 does not survive its parent ending or a daemon restart. Resume under the new
 parent to establish a new relationship; no previous tracing policy is restored.
 
+The spawn/resume result reports the effective mode to its live parent as
+`policy.trace`, including explicit `off` when tracing was omitted. This field
+describes committed live state, is not stored, and is not included in list
+responses. Older daemon responses may omit it; absence means unreported.
+Use the matching 0.5.5 SDK schema in callers and forwarding daemons: older
+closed result decoders reject this added field.
+
 After the original send settles, its originating daemon sends one ordinary
 message to each eligible parent. If two children of the same parent communicate,
 that parent gets one copy, including both `matched_children` and their delivery
