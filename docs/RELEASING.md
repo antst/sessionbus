@@ -14,6 +14,8 @@ Starting with v0.5.5, one stable root tag `vX.Y.Z` identifies the source for:
 The peers repository keeps its own release version. Existing `kit-v*` and Go
 module tags are historical releases; do not move or delete them. New `kit-v*`
 tags do not trigger npm publication.
+These workflows reject prerelease tags; they provide no prerelease kit
+publication path.
 
 Before tagging, set `bus/package.json` to the intended version, run the Go and
 JavaScript tests and DTO checks, review the release diff, and require green CI
