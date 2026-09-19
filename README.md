@@ -242,8 +242,9 @@ There is **no new persistence**: no trace history, read API, replay, disk queue,
 or changes to durable lane rows. Normal native transcripts may retain delivered
 messages as usual. Tracing works with communication logging disabled. Updated
 daemons, hub and SDK/tool declarations are required for remote tracing; older
-hosts continue ordinary messaging. See the [tracing design](docs/designs/COMMUNICATION-TRACE.md)
-for the scope and compatibility contract.
+hosts continue ordinary messaging. See the [usage guide](docs/USAGE.md#hosts-and-observation)
+for the released behavior and the [historical tracing design](docs/designs/COMMUNICATION-TRACE.md)
+for its rationale and acceptance requirements.
 
 ### Communication logs
 
