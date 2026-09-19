@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+set -eu
+repo=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
+cd "$repo"
+version=${1:?usage: deploy/publish-go-tag vMAJOR.MINOR.PATCH}
+deploy/check-release-tag "$version"
+revision=$(git rev-parse HEAD)
+tag="bus/sdk/go/$version"
+ref="refs/tags/$tag"
+
+# Never move a published module version. A repeated run is safe only when
+# the existing (possibly annotated) tag resolves to the same source commit.
+status=0
+git ls-remote --exit-code --refs origin "$ref" >/dev/null || status=$?
+case "$status" in
+  0)
+    git fetch --no-tags origin "$ref"
+    test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$revision" || {
+      echo "$tag already points at different source; refusing to replace it" >&2
+      exit 1
+    }
+    printf '%s\n' "$tag already identifies $revision"
+    ;;
+  2)
+    git tag "$tag" "$revision"
+    git push origin "$ref:$ref"
+    ;;
+  *) exit "$status" ;;
+esac

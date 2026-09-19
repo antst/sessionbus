@@ -1,6 +1,6 @@
 {
   "name": "@sessionbus/kit",
-  "version": "0.1.0-pre.3",
+  "version": "0.5.5",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,8 +25,7 @@
     "test:types": "node tools/tygo/check-package-types.js"
   },
   "publishConfig": {
-    "access": "public",
-    "tag": "pre"
+    "access": "public"
   },
   "typesVersions": {
     "*": {
