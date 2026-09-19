@@ -12,12 +12,26 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' 0
 trap 'exit 1' HUP INT TERM
 revision=$(git rev-parse HEAD)
+version=${SESSIONBUS_BUILD_VERSION:-$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || printf '%s' development)}
+if [ "$version" != development ] &&
+   ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+ echo 'Invalid build version: expected development or vMAJOR.MINOR.PATCH' >&2
+ exit 1
+fi
+build_revision=$revision
+if [ -n "$(git status --porcelain)" ]; then
+ build_revision="$revision-dirty"
+fi
 for role in host hub; do
  mkdir -p "$stage/$role/bin"
  commands=sessionbus-hub
  [ "$role" != host ] || commands='sessionbus sessionbus-call example-peer'
  for command in $commands; do
-  CGO_ENABLED=0 GOOS="$platform" GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/$role/bin/$command" "./bus/cmd/$command"
+  flags='-s -w'
+  if [ "$command" = sessionbus ]; then
+   flags="$flags -X main.buildVersion=$version -X main.buildRevision=$build_revision"
+  fi
+  CGO_ENABLED=0 GOOS="$platform" GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="$flags" -o "$stage/$role/bin/$command" "./bus/cmd/$command"
  done
  cp LICENSE deploy/release/install deploy/release/THIRD-PARTY-NOTICES.txt "$stage/$role/"
  printf '%s\n' "$role" > "$stage/$role/ROLE"

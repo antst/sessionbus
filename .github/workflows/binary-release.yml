@@ -33,6 +33,7 @@ jobs:
         env:
           TARGET_OS: ${{ matrix.os }}
           TARGET_ARCH: ${{ matrix.arch }}
+          SESSIONBUS_BUILD_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'development' }}
         run: |
           go test ./...
           GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" deploy/package-release dist
