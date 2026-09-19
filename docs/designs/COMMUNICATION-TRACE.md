@@ -1,7 +1,11 @@
 # Communication logging and parent-owned child tracing
 
-Status: implementation candidate, 2026-09-14; not yet released.
-Operator logging is a separate implementation already merged in PR #71.
+Status: design history, 2026-09-14. Parent tracing shipped in Sessionbus v0.5.4
+with the tool surface in sessionbus-peers v0.5.1. The
+[README](../../README.md#parent-controlled-child-tracing) and
+[usage guide](../USAGE.md#hosts-and-observation) describe the released contract
+and its limits; this note records the design and its acceptance requirements.
+Operator logging shipped separately in PR #71.
 This design supersedes sibling isolation as the subject of issue #63;
 it does not change group routing.
 
