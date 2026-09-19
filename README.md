@@ -220,6 +220,13 @@ This also works for persistent children, but the tracing relationship itself
 does not survive its parent ending or a daemon restart. Resume under the new
 parent to establish a new relationship; no previous tracing policy is restored.
 
+The spawn/resume result reports the effective mode to its live parent as
+`policy.trace`, including explicit `off` when tracing was omitted. This field
+describes committed live state, is not stored, and is not included in list
+responses. Older daemon responses may omit it; absence means unreported.
+Use the matching 0.5.5 SDK schema in callers and forwarding daemons: older
+closed result decoders reject this added field.
+
 After the original send settles, its originating daemon sends one ordinary
 message to each eligible parent. If two children of the same parent communicate,
 that parent gets one copy, including both `matched_children` and their delivery
@@ -227,7 +234,12 @@ results. The copy has a new message ID; its JSON body has `kind: sessionbus.trac
 the original `message_id`, `from`, permitted recipients/results, and an optional
 `body`. It is a daemon report, not a request from the original sender. Do not
 reply to its generated daemon identity. Copies and their completion pointers
-do not generate more copies.
+do not generate more copies. A parent receives no redundant trace copy when it
+is the sole resolved recipient of the original message, including an ordinary
+lane completion pointer. Sends to other recipients or to the parent plus other
+targets remain traced; unresolved targets are not assumed to be the parent.
+This exception uses recipient identity, even if its settled receipt is rejected
+or uncertain; it does not redefine delivery success or retry the original.
 
 Normal parent delivery policy applies: an idle-run parent can start a Run,
 while a staging parent receives the message for a later turn. Copy delivery

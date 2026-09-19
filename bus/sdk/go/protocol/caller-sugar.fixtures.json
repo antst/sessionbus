@@ -125,6 +125,88 @@
         "state": "unavailable",
         "reason": "native transport lost"
       }
+    },
+    {
+      "action": "spawn",
+      "method": "lane.spawn",
+      "request": {
+        "name": "child",
+        "product": "example-peer",
+        "open": {}
+      },
+      "result": {
+        "session_id": "child@local",
+        "policy": {
+          "persistent": false,
+          "auto_close_ms": 60000,
+          "idle_message": "stage",
+          "notify": true,
+          "owner_session_id": "parent@local"
+        }
+      }
+    },
+    {
+      "action": "spawn",
+      "method": "lane.spawn",
+      "request": {
+        "name": "child",
+        "product": "example-peer",
+        "open": {},
+        "trace": "off"
+      },
+      "result": {
+        "session_id": "child@local",
+        "policy": {
+          "persistent": false,
+          "auto_close_ms": 60000,
+          "idle_message": "stage",
+          "notify": true,
+          "owner_session_id": "parent@local",
+          "trace": "off"
+        }
+      }
+    },
+    {
+      "action": "spawn",
+      "method": "lane.spawn",
+      "request": {
+        "name": "child",
+        "product": "example-peer",
+        "open": {},
+        "trace": "events"
+      },
+      "result": {
+        "session_id": "child@local",
+        "policy": {
+          "persistent": false,
+          "auto_close_ms": 60000,
+          "idle_message": "stage",
+          "notify": true,
+          "owner_session_id": "parent@local",
+          "trace": "events"
+        }
+      }
+    },
+    {
+      "action": "spawn",
+      "method": "lane.spawn",
+      "request": {
+        "name": "child",
+        "product": "example-peer",
+        "open": {},
+        "trace": "content"
+      },
+      "result": {
+        "session_id": "child@local",
+        "policy": {
+          "persistent": false,
+          "auto_close_ms": 60000,
+          "idle_message": "stage",
+          "notify": true,
+          "owner_session_id": "parent@local",
+          "trace": "content"
+        }
+      }
     }
   ],
   "sequences": {

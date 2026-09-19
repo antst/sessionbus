@@ -89,6 +89,9 @@ type LanePolicy struct {
 	Notify         bool   `json:"notify"`
 	NotifyTarget   string `json:"notify_target,omitempty"`
 	OwnerSessionID string `json:"owner_session_id,omitempty"`
+	// Trace is the live mode reported only in the spawning parent's response.
+	// Absence means unreported, not off; it is never durable lane policy.
+	Trace string `json:"trace,omitempty"`
 }
 
 type RunRef struct {

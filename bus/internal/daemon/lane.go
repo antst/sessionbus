@@ -108,7 +108,7 @@ func (s *session) finishOpen(frame protocol.Frame) {
 	s.identity, s.committed = item, true
 	s.logSession(commslog.Connected)
 	s.launch.timer.Stop()
-	s.launch.reply <- answer{value: &protocol.LaneSpawnResult{SessionID: item.row.SessionID, Policy: cloneRow(item.row).Policy}}
+	s.launch.reply <- answer{value: s.daemon.directory.spawnResult(s.launch, s)}
 }
 
 func (s *session) beginClose(request routedRequest) {

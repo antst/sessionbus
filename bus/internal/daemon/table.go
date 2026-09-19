@@ -59,6 +59,18 @@ func openTable(path string) (*table, []row, error) {
 			value.Policy = &protocol.LanePolicy{Persistent: true, IdleMessage: "stage"}
 		}
 		if value.Policy != nil {
+			// LanePolicy also describes spawn responses, but trace is live-only.
+			// Preserve the former unknown-field rejection even for null/empty
+			// values that decoding and omitempty would otherwise erase.
+			if rawPolicy, present := fields["policy"]; present {
+				var policyFields map[string]json.RawMessage
+				if json.Unmarshal(rawPolicy, &policyFields) != nil {
+					return nil, nil, errors.New("invalid durable lane policy")
+				}
+				if _, present := policyFields["trace"]; present {
+					return nil, nil, errors.New("invalid durable lane policy")
+				}
+			}
 			if _, err := protocol.EncodeResult("lane.spawn", protocol.LaneSpawnResult{SessionID: value.SessionID, Policy: value.Policy}); err != nil {
 				return nil, nil, errors.New("invalid durable lane policy")
 			}
@@ -70,6 +82,9 @@ func openTable(path string) (*table, []row, error) {
 }
 
 func (t *table) write(value row) error {
+	if value.Policy != nil && value.Policy.Trace != "" {
+		return errors.New("cannot persist live trace policy")
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err

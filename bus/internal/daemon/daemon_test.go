@@ -191,6 +191,9 @@ func (p *fixtureProduct) Hello(context.Context) (sessionkit.HelloDescription, er
 	return sessionkit.HelloDescription{SupportsMessageRun: strings.HasPrefix(p.product, "wake-worker"), Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
 }
 func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest) (sessionkit.OpenResult, error) {
+	if request.Policy != nil && request.Policy.Trace != "" {
+		return sessionkit.OpenResult{}, errors.New("live trace response leaked into worker policy")
+	}
 	if strings.HasPrefix(p.product, "open-exit-worker") {
 		os.Exit(9)
 	}
