@@ -231,6 +231,8 @@ do not generate more copies. A parent receives no redundant trace copy when it
 is the sole resolved recipient of the original message, including an ordinary
 lane completion pointer. Sends to other recipients or to the parent plus other
 targets remain traced; unresolved targets are not assumed to be the parent.
+This exception uses recipient identity, even if its settled receipt is rejected
+or uncertain; it does not redefine delivery success or retry the original.
 
 Normal parent delivery policy applies: an idle-run parent can start a Run,
 while a staging parent receives the message for a later turn. Copy delivery

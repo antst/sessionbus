@@ -7,8 +7,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antst/sessionbus/bus/internal/federation"
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
+
+func TestParentTraceSoleRecipientUsesIdentityNotReceipt(t *testing.T) {
+	d, parent := traceFixture(t)
+	child := traceSpawn(t, parent, "child", "content", false)
+	d.directory.mu.Lock()
+	ref, ok := d.directory.snapshotTrace(d.directory.entries[child])
+	d.directory.mu.Unlock()
+	if !ok {
+		t.Fatal("missing live trace parent")
+	}
+	for _, disposition := range []string{"written", "injected", "queued_for_next_turn", "no_receipt", "rejected"} {
+		if !d.reserveTrace(0) {
+			t.Fatal("reserve")
+		}
+		s := newSession(d)
+		s.traceRequests = map[int64]*traceRequest{1: {messageID: "original", refs: []federation.TraceRecipient{ref}}}
+		s.finishTrace(protocol.Frame{ID: 1}, protocol.MessageSendResult{Deliveries: []protocol.MessageSendDelivery{{SessionID: "parent@local", Disposition: disposition}}}, 0, nil)
+		traceIdle(t, d)
+		traceAbsent(t, parent)
+	}
+}
 
 func traceOriginal(t *testing.T, recipient *peerClient, from, body string) protocol.DeliveryRequest {
 	t.Helper()
