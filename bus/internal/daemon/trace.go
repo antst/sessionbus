@@ -289,6 +289,12 @@ func (s *session) finishTrace(frame protocol.Frame, result any, code int, extra 
 		byParent[key] = append(byParent[key], ref)
 	}
 	for _, refs := range byParent {
+		// The original already went only to this parent. Check the complete
+		// settled aggregate, before projecting it to this parent's children;
+		// unresolved targets and fanout must still produce useful copies.
+		if len(deliveries) == 1 && deliveries[0].SessionID == refs[0].Owner.SessionID {
+			continue
+		}
 		body := traceEnvelope{Kind: "sessionbus.trace", MessageID: captured.messageID, From: captured.from, Deliveries: []protocol.MessageSendDelivery{}, ErrorCode: code}
 		children := map[string]bool{}
 		source := false

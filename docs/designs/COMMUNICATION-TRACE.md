@@ -78,6 +78,13 @@ metadata, preserved across federation; text in a public message cannot set it.
 Marked copies bypass parent-copy generation at every hop, including their own
 delivery results. Their normal routing and receipt handling still apply.
 
+0.5.5 correction (#81): omit a parent's redundant copy when the complete settled
+original-send aggregate has exactly one resolved recipient and that canonical
+session ID is the parent. This includes ordinary lane completion pointers sent
+only to their tracing parent. Pointers sent elsewhere and fanout still produce
+copies; unresolved selectors do not establish recipient identity. Check before
+per-parent projection and do not count an intentional omission as queue loss.
+
 Copy submission is best-effort. A full queue, timeout, unavailable parent or lost
 connection drops trace events without delaying or changing ordinary traffic.
 Do not resend the original message or retain trace copies for reconnect. The end of a
