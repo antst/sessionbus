@@ -6,11 +6,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
+
+func TestDurablePolicyStillRejectsResponseTrace(t *testing.T) {
+	path := t.TempDir()
+	store, _, err := openTable(path)
+	must(t, err)
+	value := row{SessionID: "child@local", Product: "fixture", Name: "child@local", Groups: []string{"one", "two"}, CreatedAt: time.Now(), Policy: &protocol.LanePolicy{IdleMessage: "stage"}}
+	must(t, store.write(value))
+	file := filepath.Join(path, rowFile(value.SessionID))
+	raw, err := os.ReadFile(file)
+	must(t, err)
+	for _, mode := range []any{"off", "events", "content", "", nil} {
+		var fields map[string]any
+		must(t, json.Unmarshal(raw, &fields))
+		fields["policy"].(map[string]any)["trace"] = mode
+		changed, err := json.Marshal(fields)
+		must(t, err)
+		must(t, os.WriteFile(file, changed, 0600))
+		if _, _, err := openTable(path); err == nil {
+			t.Errorf("durable trace key accepted: %#v", mode)
+		}
+	}
+	must(t, os.WriteFile(file, raw, 0600))
+	value.Policy.Trace = "off"
+	if err := store.write(value); err == nil {
+		t.Fatal("response-only trace written to disk")
+	}
+	after, err := os.ReadFile(file)
+	must(t, err)
+	if string(after) != string(raw) {
+		t.Fatal("refused write changed durable bytes")
+	}
+}
 
 // Exercise the same Action/closed-result SDK path used by product tool bridges.
 func traceActionSpawn(t *testing.T, parent *peerClient, input protocol.LaneSpawnRequest, want string) protocol.LaneSpawnResult {
