@@ -146,6 +146,10 @@ For each logical message:
    failures or uncertain outcomes. Do not add a trace-specific wait or timeout.
 4. Form the set of eligible parent recipients. A parent present through both
    source and target is present once; select its permitted projection.
+   Omit a copy to the original sender, or to a parent that is the sole resolved
+   recipient in the complete settled result. Apply these omissions per parent;
+   other eligible parents remain traced, and unresolved recipients are not
+   assumed to be the parent.
 5. Enqueue one trace copy per parent, containing the original source/target,
    permitted body and the relevant per-recipient status results. Use the parent's
    ordinary delivery queue and mark the copy as a daemon-generated trace message.
