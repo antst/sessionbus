@@ -71,6 +71,20 @@ func TestPullHubListsAndDeliversWithoutReplicatedRows(t *testing.T) {
 	sender := connectPeer(t, alphaSocket, "sender", "sender", "team")
 	receiver := connectPeer(t, betaSocket, "receiver-id", "receiver", "team")
 	hidden := connectPeer(t, betaSocket, "hidden-id", "hidden", "other")
+	// Local peer readiness does not await the asynchronous hub supervisor.
+	// Establish remote routing before asserting the complete aggregate roster.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var remote protocol.SessionListResult
+		err := sender.call("session.list", protocol.SessionListRequest{Host: "beta"}, &remote)
+		if err == nil {
+			break
+		}
+		if rpcCode(err) != protocol.UnknownHost || time.Now().After(deadline) {
+			t.Fatalf("remote host did not become ready: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	var listed protocol.SessionListResult
 	checkSelf := func() {
 		t.Helper()
