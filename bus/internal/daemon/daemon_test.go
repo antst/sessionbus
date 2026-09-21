@@ -57,6 +57,12 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(os.Getenv("STDERR_PARENT_READY"), []byte("ready"), 0o600)
 		os.Exit(7)
 	}
+	if strings.HasPrefix(name, "mutual-worker") {
+		product := &mutualSendProduct{fixtureProduct: fixtureProduct{product: name}}
+		product.worker = sessionkit.NewWorker(product)
+		_ = product.worker.Serve(context.Background())
+		os.Exit(0)
+	}
 	if strings.HasPrefix(name, "wake-worker") || strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
 		worker := sessionkit.NewWorker(&fixtureProduct{product: name})
 		_ = worker.Serve(context.Background())
@@ -79,7 +85,7 @@ func runOrderedWorker(product string) error {
 	}
 	defer fd.Close()
 	reader := bufio.NewReaderSize(fd, protocol.MaxFrameBytes)
-	hello := protocol.WorkerHello{Protocol: 1, LaunchToken: os.Getenv("SESSIONBUS_LAUNCH_TOKEN"), HelloDescription: protocol.HelloDescription{Product: product, SupportedOpenFields: []string{}, ExtraArguments: []protocol.ExtraArgument{}}}
+	hello := protocol.WorkerHello{Protocol: 1, LaunchToken: os.Getenv("SESSIONBUS_LAUNCH_TOKEN"), HelloDescription: protocol.HelloDescription{SupportsMessageRun: true, Product: product, SupportedOpenFields: []string{}, ExtraArguments: []protocol.ExtraArgument{}}}
 	if err = rawCall(fd, reader, 1, "session.hello", hello, &struct{}{}); err != nil {
 		return err
 	}
@@ -115,7 +121,7 @@ func runRehelloWorker(product string) error {
 	}
 	defer fd.Close()
 	reader := bufio.NewReaderSize(fd, protocol.MaxFrameBytes)
-	hello := protocol.WorkerHello{Protocol: 1, LaunchToken: os.Getenv("SESSIONBUS_LAUNCH_TOKEN"), HelloDescription: protocol.HelloDescription{Product: product, SupportedOpenFields: []string{}, ExtraArguments: []protocol.ExtraArgument{}}}
+	hello := protocol.WorkerHello{Protocol: 1, LaunchToken: os.Getenv("SESSIONBUS_LAUNCH_TOKEN"), HelloDescription: protocol.HelloDescription{SupportsMessageRun: true, Product: product, SupportedOpenFields: []string{}, ExtraArguments: []protocol.ExtraArgument{}}}
 	if err = rawCall(fd, reader, 1, "session.hello", hello, &struct{}{}); err != nil {
 		return err
 	}
@@ -188,7 +194,7 @@ type fixtureProduct struct {
 }
 
 func (p *fixtureProduct) Hello(context.Context) (sessionkit.HelloDescription, error) {
-	return sessionkit.HelloDescription{SupportsMessageRun: strings.HasPrefix(p.product, "wake-worker"), Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
+	return sessionkit.HelloDescription{SupportsMessageRun: !strings.HasPrefix(p.product, "fixture-worker-no-wake"), Product: p.product, Version: "test", SupportedOpenFields: []string{"cwd", "permission_mode", "model", "reasoning_effort", "arguments"}, ExtraArguments: []sessionkit.ExtraArgument{}}, nil
 }
 func (p *fixtureProduct) Open(_ context.Context, request sessionkit.OpenRequest) (sessionkit.OpenResult, error) {
 	if request.Policy != nil && request.Policy.Trace != "" {
@@ -436,7 +442,7 @@ func TestLegacyDurableRowListsCompatibilityPolicy(t *testing.T) {
 		t.Fatalf("legacy sessions = %#v", listed.Sessions)
 	}
 	policy := listed.Sessions[0].Policy
-	if policy == nil || !policy.Persistent || policy.AutoCloseMS != 0 || policy.IdleMessage != "stage" || policy.Notify || policy.OwnerSessionID != "" || policy.NotifyTarget != "" {
+	if policy == nil || !policy.Persistent || policy.AutoCloseMS != 0 || policy.IdleMessage != "run" || policy.Notify || policy.OwnerSessionID != "" || policy.NotifyTarget != "" {
 		t.Fatalf("legacy policy = %#v", policy)
 	}
 }

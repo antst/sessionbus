@@ -28,7 +28,8 @@ excludes `info`, Open arguments, payloads, results, secrets, and lifetime tokens
 Lane requested permission mode is reported without inferring native approval.
 Responses are bounded; errors never silently truncate a successful inventory.
 
-Federation capability is negotiated using TLS ALPN `sessionbus-roster/1`.
+Federation capability is negotiated using TLS ALPN `sessionbus-roster/1`,
+also included in the newer `sessionbus-trace/1` and `sessionbus-wake/1` capabilities.
 Existing pinned-key authentication is unchanged. New and legacy peers negotiate
 no capability when either side lacks it. A new daemon uses the old hosts query
 to report unavailable metadata on an old hub, without sending unsupported RPC.

@@ -114,10 +114,10 @@ what lets the work evolve beyond the original prompt.
 
 Use the public `describe` action to check a product's supported open fields, then
 `spawn` to open it locally or on a selected host. This example deliberately
-keeps the session around for follow-up and stages idle messages:
+keeps the session around for follow-up; inbound messages wake it automatically:
 
 ```json
-{"action":"spawn","arguments":{"product":"codex-peer","name":"reviewer","open":{"cwd":"/absolute/path/to/project"},"auto_close_ms":0,"idle_message":"stage"}}
+{"action":"spawn","arguments":{"product":"codex-peer","name":"reviewer","open":{"cwd":"/absolute/path/to/project"},"auto_close_ms":0}}
 ```
 
 Choose an actual directory on the destination host. Omitted native permission
@@ -130,10 +130,11 @@ Use returned IDs for subsequent operations:
 1. `run` starts and waits, or `start` returns a Run reference for later collection.
 2. `status` and `wait` read without consuming. Inspect the result, outcome and
    reason before acknowledging a terminal record with `ack`.
-3. Send relevant new evidence. During active work the product determines
-   injection or staging; while idle, the chosen lane policy applies.
-4. Start the next Run when needed. With `stage`, the next explicit Run uses
-   staged input through the adapter's documented path.
+3. Send relevant new evidence. Delivery wakes an idle agent without a second
+   prompt. During active work it joins native processing; input crossing the
+   terminal boundary must still cause work automatically.
+4. Collect message-triggered Runs with `status` or `wait` and acknowledge their
+   terminal records. An explicit `run` remains available for direct task input.
 5. Close when done. `close` retains the daemon's resume row; `forget` removes
    that row without deleting native history.
 
@@ -147,13 +148,18 @@ interruption is subject to the product's documented acceptance scope.
 | --- | --- |
 | `persistent` | Whether the lane survives its lifetime owner's exit; default `false`. It does not make results durable. |
 | `auto_close_ms` | Retirement grace after a native completed/failed/interrupted terminal; default `60000`, `0` disables it. It is not an Open timeout; collecting does not reset it. |
-| `idle_message` | `stage` waits for a later explicit Run; `run` permits an idle message to start work when the product supports it. |
-| `notify` / `notify_target` | Completion pointers arrive as ordinary messages. They refer to results; they do not contain or consume them. |
+| Message delivery | Always wakes an idle agent. Legacy `idle_message` inputs are accepted for compatibility and normalize to `run`; there is no passive mode. |
+| `notify` / `notify_target` | Completion pointers arrive as ordinary messages. They wake idle recipients and refer to results without containing or consuming them. A pointer-seeded run retains its result but emits no further automatic completion pointer. |
 | `trace` | Live parent-selected `off`, `events` or `content` copies of child bus traffic; default `off`. No trace history is added. |
 
 A retained `unavailable` record does not establish a native terminal and does
 not by itself start a new retirement grace. Parent-owned lanes notify their
 owner by default; persistent lanes need an explicit notification destination.
+Collect and acknowledge retained results: a full 256-record cursor returns Busy
+for new work. A completion-pointer-seeded run has no follow-on notification,
+including to a third-party owner. Cross-host completion notices require upgraded
+hub and host daemons; older links reject that notice without affecting ordinary
+sends.
 Inspect effective policy in the returned row.
 
 Workers keep an ordered result cursor. Acknowledge the oldest terminal record
@@ -166,7 +172,7 @@ Native resume requires an offline retained lane, a live authorized resumer and
 saved native history. It restores the native session, not the old Worker's
 results. An attached lane cannot be resumed. On resume, omitted `auto_close_ms`
 resets to the default; pass `0` again to keep it disabled. Persistence can be
-promoted, not demoted; omitted idle policy is retained. See the protocol for
+promoted, not demoted; saved passive policies upgrade to wake. See the protocol for
 notification inheritance and complete resume rules.
 
 ## Communication is not confined to the ownership tree
@@ -237,7 +243,7 @@ child's Sessionbus traffic and settled delivery metadata, optionally including
 message bodies. It excludes native prompts/results and Run/lane lifecycle
 events. It is best-effort, defaults off, adds no persistence and requires a
 live parent relationship. Copies follow normal message admission, so they can
-stage or wake an attached parent. Turning tracing off stops new admissions;
+wake an idle attached parent. Turning tracing off stops new admissions;
 already admitted sends may still produce copies. Ended parent lifetimes do not
 receive late copies. Tracing across hosts requires updated hosts and hub.
 
@@ -253,7 +259,7 @@ leave gaps; neither logs nor traces establish model consumption.
 | --- | --- |
 | `written` | A complete local transport write without an observed error; not native acceptance or reading. |
 | `injected` | Identity-bound native admission; not understanding or agreement. |
-| `queued_for_next_turn` | Demonstrated staging for a later explicit Run; not durability or guaranteed future consumption. |
+| `queued_for_next_turn` | Automatically scheduled input: native scheduling for peers, or a bounded daemon queue for lanes after pre-submission refusal. No later human prompt or Run is required. Not native admission, durability, or proof of consumption; close/disconnect discards queued work. |
 | `rejected` / `not_submitted` | Proven refusal before dispatch on the documented routing path. |
 | `rejected` / `no_receipt` | No usable receipt after dispatch; the operation may have happened. Do not automatically resend. |
 

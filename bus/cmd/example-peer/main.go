@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	sdk "github.com/antst/sessionbus/bus/sdk/go"
+	"github.com/antst/sessionbus/bus/sdk/go/protocol"
 )
 
 type activeRun struct {
@@ -24,7 +25,6 @@ type activeRun struct {
 type example struct {
 	mu     sync.Mutex
 	active *activeRun
-	queued []string
 	call   func(context.Context, string, any, any) error
 }
 
@@ -75,7 +75,7 @@ func (p *example) Run(ctx context.Context, run *sdk.Run, seed sdk.RunInput) (res
 	} else {
 		input = seed.Delivery.Body
 	}
-	ctx, active, queued := p.begin(ctx, run)
+	ctx, active := p.begin(ctx, run)
 	defer func() { result.Result = p.finish(run, active, result.Result) }()
 	if seed.Delivery != nil {
 		if err := run.ReportDelivery(sdk.DeliveryReceipt{Disposition: "injected"}, nil); err != nil {
@@ -100,25 +100,20 @@ func (p *example) Run(ctx context.Context, run *sdk.Run, seed sdk.RunInput) (res
 	default:
 		result = sdk.TurnResult{Outcome: "completed", Result: input}
 	}
-	if queued != "" {
-		result.Result = queued + "\n" + result.Result
-	}
 	return result, err
 }
 
-func (p *example) begin(parent context.Context, run *sdk.Run) (context.Context, *activeRun, string) {
+func (p *example) begin(parent context.Context, run *sdk.Run) (context.Context, *activeRun) {
 	ctx, cancel := context.WithCancel(parent)
 	p.mu.Lock()
 	active := &activeRun{cancel: cancel}
 	p.active, run.Native = active, active
-	queued := strings.Join(p.queued, "\n")
-	p.queued = nil
 	if run.Interrupted() {
 		active.cancel()
 		active.cancel = nil
 	}
 	p.mu.Unlock()
-	return ctx, active, queued
+	return ctx, active
 }
 
 func (p *example) finish(run *sdk.Run, active *activeRun, result string) string {
@@ -155,8 +150,7 @@ func (p *example) Deliver(_ context.Context, request sdk.DeliveryRequest, _ *sdk
 		p.active.injected = append(p.active.injected, request.Body)
 		return sdk.DeliveryReceipt{Disposition: "injected"}, nil
 	}
-	p.queued = append(p.queued, request.Body)
-	return sdk.DeliveryReceipt{Disposition: "queued_for_next_turn"}, nil
+	return sdk.DeliveryReceipt{}, &sdk.ProtocolError{Code: protocol.NotRunning, Message: "not_running"}
 }
 
 func (*example) Close(context.Context, sdk.SessionCloseRequest) error { return nil }

@@ -28,7 +28,9 @@ type answer struct {
 }
 
 type routedRequest struct {
+	scheduled     bool // Sender already received daemon queue admission.
 	traceCopy     bool
+	completion    bool
 	traceLifetime string
 	runID         string
 	collect       bool
@@ -53,39 +55,43 @@ type session struct {
 	traceTargets               []federation.TraceRecipient
 	traceTargetsBytes          int
 	runFromTrace               bool
+	runFromCompletion          bool
+	completion                 bool
 	commsRequests              map[int64]commsRequest
 	runID, runGeneration       string
 	runSequence                uint64
+	acknowledgedSequence       uint64
 	deadline, previousDeadline time.Time
 	autoClose                  <-chan time.Time
 	stopAuto                   func()
 
-	daemon        *Daemon
-	wire          *conn.Conn
-	inbox         chan any
-	identity      *entry
-	lastIn        int64
-	nextOut       int64
-	pending       map[int64]routedRequest
-	requests      map[int64]*requestState
-	owned         int
-	stopping      bool
-	closed        bool
-	child         *structuredprocess.Process
-	launch        *launch
-	committed     bool
-	openID        int64
-	closeCall     *routedRequest
-	closeAnswer   answer
-	closeTimer    *time.Timer
-	forget        bool
-	launchResult  *answer
-	processExited bool
-	stopSignal    syscall.Signal
-	forwarded     chan federation.Reply
-	caller        *federation.Caller
-	omit          *entry
-	messageID     string
+	daemon             *Daemon
+	wire               *conn.Conn
+	inbox              chan any
+	identity           *entry
+	lastIn             int64
+	nextOut            int64
+	pending            map[int64]routedRequest
+	deferredDeliveries []routedRequest
+	requests           map[int64]*requestState
+	owned              int
+	stopping           bool
+	closed             bool
+	child              *structuredprocess.Process
+	launch             *launch
+	committed          bool
+	openID             int64
+	closeCall          *routedRequest
+	closeAnswer        answer
+	closeTimer         *time.Timer
+	forget             bool
+	launchResult       *answer
+	processExited      bool
+	stopSignal         syscall.Signal
+	forwarded          chan federation.Reply
+	caller             *federation.Caller
+	omit               *entry
+	messageID          string
 }
 
 func newSession(daemon *Daemon) *session {
@@ -154,7 +160,7 @@ func (s *session) handleEvent(event any) {
 		}
 	case routedRequest:
 		if s.stopping || value.destination != s.identity || s.launch != nil && !s.committed {
-			value.reply <- answer{code: protocol.NotConnected}
+			s.answerRouted(value, answer{code: protocol.NotConnected})
 		} else {
 			s.issue(value)
 		}
@@ -257,11 +263,11 @@ func (s *session) firstHello(frame protocol.Frame) {
 
 func (s *session) issue(request routedRequest) {
 	if s.closeCall != nil && !request.collect {
-		request.reply <- answer{code: protocol.Busy}
+		s.answerRouted(request, answer{code: protocol.Busy})
 		return
 	}
-	if len(s.pending) >= maxPendingCalls {
-		request.reply <- answer{code: protocol.Busy}
+	if len(s.pending)+len(s.deferredDeliveries) >= maxPendingCalls {
+		s.answerRouted(request, answer{code: protocol.Busy})
 		return
 	}
 	method := request.method
@@ -269,26 +275,33 @@ func (s *session) issue(request routedRequest) {
 		request.method, request.collect = "turn.execute", method == "turn.run"
 	}
 	if code := s.daemon.directory.admit(s.identity, s, request.method); code != 0 {
-		request.reply <- answer{code: code}
+		s.answerRouted(request, answer{code: code})
 		return
 	}
 	if method == "session.close" {
 		s.beginClose(request)
 		return
 	}
+	if request.method == "turn.execute" || method == "message.deliver" && !s.identity.peer && s.runID == "" {
+		if !s.hasRunCapacity() {
+			s.answerRouted(request, answer{code: protocol.Busy})
+			return
+		}
+	}
 	if request.method == "turn.execute" {
 		input := request.params.(*protocol.TurnRunRequest)
 		request.runID = s.reserveRun()
 		request.params = &protocol.ExecuteRequest{SessionID: s.identity.row.SessionID, RunID: request.runID, Input: input.Input}
-	} else if method == "message.deliver" && !s.identity.peer && s.identity.row.Policy.IdleMessage == "run" && s.runID == "" {
+	} else if method == "message.deliver" && !s.identity.peer && s.runID == "" {
 		if s.closeCall != nil {
-			request.reply <- answer{code: protocol.Busy}
+			s.answerRouted(request, answer{code: protocol.Busy})
 			return
 		}
 		input := request.params.(protocol.DeliveryRequest)
 		request.runID = s.reserveRun()
 		input.RunID = request.runID
 		s.runFromTrace = request.traceCopy
+		s.runFromCompletion = request.completion
 		request.params = input
 	}
 	// The worker sees its canonical opened identity even when the public caller
@@ -313,7 +326,7 @@ func (s *session) issue(request routedRequest) {
 		if request.runID != "" {
 			s.refuseRun(request.runID)
 		}
-		request.reply <- answer{code: protocol.NotConnected}
+		s.answerRouted(request, answer{code: protocol.NotConnected})
 		return
 	}
 	if request.runID != "" {
@@ -335,7 +348,7 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 		defer s.writeDeferredClose()
 	}
 	if request.destination != s.identity || !s.daemon.directory.current(request.destination, s) {
-		request.reply <- answer{code: protocol.NotConnected}
+		s.answerRouted(request, answer{code: protocol.NotConnected})
 		return
 	}
 
@@ -344,23 +357,41 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 		return
 	}
 	if frame.Error != nil {
+		// NotRunning on an ordinary worker delivery is a strict pre-submission
+		// refusal: no native input was written or enqueued. Retain it for an
+		// automatic run, answering now so mutually sending active runs cannot
+		// deadlock waiting for each other's completion. Never replay a seeded
+		// run or an uncertain native write.
+		if frame.Error.Code == protocol.NotRunning && request.method == "message.deliver" && request.runID == "" && !s.identity.peer && s.closeCall == nil {
+			if s.runID == "" {
+				s.issue(request)
+			} else if !s.hasRunCapacity() {
+				s.answerRouted(request, answer{code: protocol.Busy})
+			} else {
+				s.answerRouted(request, answer{value: &protocol.DeliveryReceipt{Disposition: "queued_for_next_turn"}})
+				request.scheduled, request.reply = true, nil
+				s.deferredDeliveries = append(s.deferredDeliveries, request)
+			}
+			return
+		}
 		if request.runID != "" && (request.method == "turn.execute" || frame.Error.Code != protocol.Internal) {
 			s.refuseRun(request.runID)
 		}
-		request.reply <- errorAnswer(frame.Error)
+		s.answerRouted(request, errorAnswer(frame.Error))
+		s.startDeferredDelivery()
 		return
 	}
 	value, err := protocol.DecodeResult(request.method, frame.Result)
 	if err != nil {
 		s.wire.Close()
-		request.reply <- answer{code: protocol.NotConnected}
+		s.answerRouted(request, answer{code: protocol.NotConnected})
 		return
 	}
 	if request.method == "turn.execute" {
 		ref := value.(*protocol.RunRef)
 		if ref.RunID != request.runID || ref.SessionID != s.identity.row.SessionID {
 			s.wire.Close()
-			request.reply <- answer{code: protocol.NotConnected}
+			s.answerRouted(request, answer{code: protocol.NotConnected})
 			return
 		}
 		if request.collect {
@@ -369,7 +400,10 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 			return
 		}
 	}
-	request.reply <- answer{value: value}
+	if request.method == "turn.ack" {
+		s.recordAcknowledgment(request.params.(*protocol.RunRef))
+	}
+	s.answerRouted(request, answer{value: value})
 }
 
 func errorAnswer(value *protocol.RPCError) answer {
@@ -398,6 +432,7 @@ func (s *session) connectionClosed() {
 }
 
 func (s *session) settlePending(code int) {
+	s.settleDeferredDeliveries(code)
 	for id, request := range s.pending {
 		delete(s.pending, id)
 		if request.method == "turn.run" {
@@ -406,8 +441,15 @@ func (s *session) settlePending(code int) {
 		if s.closeCall != nil && request.reply == s.closeCall.reply {
 			continue
 		}
-		request.reply <- answer{code: code}
+		s.answerRouted(request, answer{code: code})
 	}
+}
+
+func (s *session) settleDeferredDeliveries(code int) {
+	for _, request := range s.deferredDeliveries {
+		s.answerRouted(request, answer{code: code})
+	}
+	s.deferredDeliveries = nil
 }
 
 func (s *session) drain() bool {

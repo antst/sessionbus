@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -68,12 +69,13 @@ func TestRunDeliveryInterruptAndCall(t *testing.T) {
 	}
 	for _, body := range []string{"first", "second"} {
 		receipt, err := product.Deliver(context.Background(), sdk.DeliveryRequest{Body: body}, nil)
-		if err != nil || receipt.Disposition != "queued_for_next_turn" {
+		var refusal *sdk.ProtocolError
+		if !errors.As(err, &refusal) || refusal.Code != -32004 {
 			t.Fatalf("idle receipt = %#v, %v", receipt, err)
 		}
 	}
 	result, err := product.Run(context.Background(), &sdk.Run{}, textSeed("plain"))
-	if err != nil || result.Outcome != "completed" || result.Result != "first\nsecond\nplain" {
+	if err != nil || result.Outcome != "completed" || result.Result != "plain" {
 		t.Fatalf("echo = %#v, %v", result, err)
 	}
 	result, err = product.Run(context.Background(), &sdk.Run{}, textSeed("call session.list {}"))
@@ -123,7 +125,8 @@ func TestRunCleansUpAfterEarlyDeliveryReceiptFailure(t *testing.T) {
 		t.Fatalf("failed run retained native state %#v", run.Native)
 	}
 	receipt, err := product.Deliver(context.Background(), sdk.DeliveryRequest{MessageID: "later", Body: "queued"}, nil)
-	if err != nil || receipt.Disposition != "queued_for_next_turn" {
+	var refusal *sdk.ProtocolError
+	if !errors.As(err, &refusal) || refusal.Code != -32004 {
 		t.Fatalf("delivery after failed run = %#v, %v", receipt, err)
 	}
 }

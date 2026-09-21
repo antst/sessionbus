@@ -254,7 +254,7 @@ func TestParentTraceCopyLifetimeGateAndPressure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	caller := federation.Caller{SessionID: "trace@local", Product: "sessionbus", PrivateGroup: privateGroup(item), Groups: []string{privateGroup(item)}}
-	wait := d.directory.forwardLocalTrace(caller, nil, "message.send", &protocol.MessageSendRequest{Target: "parent@local", Message: "stale copy"}, "", false, &federation.TraceDestination{SessionID: "parent@local", Lifetime: old})
+	wait := d.directory.forwardLocalTrace(caller, nil, "message.send", &protocol.MessageSendRequest{Target: "parent@local", Message: "stale copy"}, "", false, &federation.TraceDestination{SessionID: "parent@local", Lifetime: old}, false)
 	reply, ok := wait(ctx.Done())
 	if !ok || reply.Error != nil {
 		t.Fatalf("stale copy result %+v", reply)
@@ -269,7 +269,7 @@ func TestParentTraceCopyLifetimeGateAndPressure(t *testing.T) {
 	d.traceBytes = maxTraceBytes
 	d.directory.mu.Unlock()
 	result := traceChildSend(t, d, child, protocol.MessageSendRequest{Target: "receiver", Message: "ordinary delivery survives trace pressure"})
-	if len(result.Deliveries) != 1 || result.Deliveries[0].Disposition != "injected" {
+	if len(result.Deliveries) != 1 || (result.Deliveries[0].Disposition != "written" && result.Deliveries[0].Disposition != "injected") {
 		t.Fatal(result)
 	}
 	select {
@@ -379,7 +379,7 @@ func TestParentTraceHeldParentDoesNotHoldOriginalAndShutdownJoins(t *testing.T) 
 	var result protocol.MessageSendResult
 	// This returns before the parent reads or acknowledges its copy.
 	must(t, sender.call("message.send", protocol.MessageSendRequest{Target: child, Message: "original completes"}, &result))
-	if len(result.Deliveries) != 1 || result.Deliveries[0].Disposition != "injected" {
+	if len(result.Deliveries) != 1 || (result.Deliveries[0].Disposition != "written" && result.Deliveries[0].Disposition != "injected") {
 		t.Fatal(result)
 	}
 	frame, err := readRawFrame(reader)

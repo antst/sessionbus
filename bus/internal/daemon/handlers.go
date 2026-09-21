@@ -336,7 +336,7 @@ func (s *session) send(frame protocol.Frame, input *protocol.MessageSendRequest)
 		}
 		s.traceTarget(frame.ID, item, state.deliveries[index].Target)
 		reply := make(chan answer, 1)
-		request := routedRequest{traceCopy: s.traceCopy != nil, method: "message.deliver", params: deliveryRequest, reply: reply}
+		request := routedRequest{traceCopy: s.traceCopy != nil, completion: s.completion, method: "message.deliver", params: deliveryRequest, reply: reply}
 		if s.traceCopy != nil {
 			request.traceLifetime = s.traceCopy.Lifetime
 		}

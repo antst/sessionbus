@@ -20,7 +20,7 @@ can also be a tool or another program implementing the protocol.
 - **Bring in a specialist and keep it involved.** Open a managed native session,
   or *lane*, locally or on another host. It can consult other visible peers,
   receive new evidence and continue through follow-up Runs in its native context.
-  Choose how idle messages, owner exit, notifications and retirement work.
+  Messages wake idle agents. Choose owner-exit, notification and retirement behavior.
 - **Let programs participate.** A script can coordinate sessions; a tool or
   service can implement a resident peer or a managed Worker. Public Go and
   JavaScript SDKs and a non-model reference Worker are provided. Each external
@@ -243,8 +243,8 @@ assumed to be the parent. These exceptions use sender and recipient identity,
 even if a settled receipt is rejected or uncertain; they do not redefine
 delivery success or retry the original.
 
-Normal parent delivery policy applies: an idle-run parent can start a Run,
-while a staging parent receives the message for a later turn. Copy delivery
+Normal delivery applies: a message wakes an idle parent, including a trace
+copy. Copy delivery
 never holds up the original result. Copies are best-effort, memory-bounded and
 not retried; an unconfirmed copy may nevertheless have reached its recipient.
 Original `written` or `no_receipt` outcomes keep their existing meanings and do

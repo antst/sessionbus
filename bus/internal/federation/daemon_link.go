@@ -43,7 +43,7 @@ type pendingCall struct {
 func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), stderr io.Writer, lifetime ...func(LifetimeEvent)) error {
 	var group, helpers sync.WaitGroup
 	wire := conn.Start(fd, inbox, &group)
-	traceCapable := SupportsTrace(fd)
+	traceCapable, wakeCapable := SupportsTrace(fd), SupportsWake(fd)
 	nextID, lastIn := int64(0), int64(0)
 	pending := map[int64]pendingCall{}
 	stopping := ctx.Done()
@@ -76,6 +76,10 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 				pending[nextID] = pendingCall{method: ownerEndMethod, reply: event.Reply}
 			case OutgoingCall:
 				request := event.Value.Request
+				if request.Completion && !wakeCapable {
+					event.Reply <- errorReply(protocol.ForwardLost, nil)
+					continue
+				}
 				if requestRequiresTrace(request) && !traceCapable {
 					event.Reply <- traceUnsupported()
 					continue
@@ -127,7 +131,7 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 				}
 			case conn.Frame:
 				if cause == nil {
-					cause = daemonFrame(host, traceCapable, event, pending, wire, inbox, admit, &helpers, &lastIn, lifetime)
+					cause = daemonFrame(host, traceCapable, wakeCapable, event, pending, wire, inbox, admit, &helpers, &lastIn, lifetime)
 					if cause != nil {
 						fmt.Fprintln(stderr, cause)
 						wire.Close()
@@ -144,7 +148,7 @@ func ServeDaemon(ctx context.Context, host string, fd net.Conn, inbox chan any, 
 	}
 }
 
-func daemonFrame(host string, traceCapable bool, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64, lifetime []func(LifetimeEvent)) error {
+func daemonFrame(host string, traceCapable, wakeCapable bool, event conn.Frame, pending map[int64]pendingCall, wire *conn.Conn, inbox chan any, admit func(IncomingCall) (Wait, error), helpers *sync.WaitGroup, lastIn *int64, lifetime []func(LifetimeEvent)) error {
 	frame := event.Value
 	if event.Err != nil {
 		return event.Err
@@ -221,6 +225,13 @@ func daemonFrame(host string, traceCapable bool, event conn.Frame, pending map[i
 	value, target, err := decodeForward(frame.Params, source)
 	if err != nil || target != host {
 		return errFrame
+	}
+	if value.Request.Completion && !wakeCapable {
+		body, responseErr := responseBytes(frame.ID, errorReply(protocol.ForwardLost, nil), true)
+		if responseErr != nil || !wire.Send(body) {
+			return errFrame
+		}
+		return nil
 	}
 	if requestRequiresTrace(value.Request) && !traceCapable {
 		body, responseErr := responseBytes(frame.ID, traceUnsupported(), true)

@@ -111,21 +111,21 @@ func (p *fakeProduct) Deliver(ctx context.Context, _ DeliveryRequest, run *Run) 
 			<-p.deliverRelease
 		}
 		if run == nil {
-			return DeliveryReceipt{Disposition: "queued_for_next_turn"}, nil
+			return DeliveryReceipt{}, &ProtocolError{Code: protocol.NotRunning, Message: "not_running"}
 		}
 		select {
 		case <-run.Done():
-			return DeliveryReceipt{Disposition: "queued_for_next_turn"}, nil
+			return DeliveryReceipt{}, &ProtocolError{Code: protocol.NotRunning, Message: "not_running"}
 		default:
 		}
 		select {
 		case <-run.Done():
-			return DeliveryReceipt{Disposition: "queued_for_next_turn"}, nil
+			return DeliveryReceipt{}, &ProtocolError{Code: protocol.NotRunning, Message: "not_running"}
 		case <-run.AdmittedDone():
 		}
 		select {
 		case <-run.Done():
-			return DeliveryReceipt{Disposition: "queued_for_next_turn"}, nil
+			return DeliveryReceipt{}, &ProtocolError{Code: protocol.NotRunning, Message: "not_running"}
 		default:
 		}
 		if p.nativeEvents != nil {
@@ -145,13 +145,12 @@ func (p *fakeProduct) Deliver(ctx context.Context, _ DeliveryRequest, run *Run) 
 	return DeliveryReceipt{Disposition: "injected"}, nil
 }
 
-func TestWorkerDeliveryGetsNilWhileIdle(t *testing.T) {
+func TestWorkerIdleDeliveryRequiresSeed(t *testing.T) {
 	p := &fakeProduct{deliverRun: make(chan *Run)}
 	h := startHarness(t, p, true, true)
 	var receipt DeliveryReceipt
-	delivered := async(h, "message.deliver", delivery, &receipt)
-	check(t, <-p.deliverRun == nil, "idle delivery received a run")
-	check(t, <-delivered == nil && receipt.Disposition == "queued_for_next_turn", "idle receipt = %#v", receipt)
+	wantCode(t, h.Call(context.Background(), "message.deliver", delivery, &receipt), protocol.NotRunning)
+	check(t, atomic.LoadInt32(&p.calls[4]) == 0, "idle delivery reached product")
 }
 
 func TestWorkerDeliveryKeepsAdmissionRun(t *testing.T) {
@@ -171,7 +170,7 @@ func TestWorkerDeliveryKeepsAdmissionRun(t *testing.T) {
 	default:
 	}
 	close(p.deliverRelease)
-	check(t, <-delivered == nil && receipt.Disposition == "queued_for_next_turn", "terminal crossing receipt = %#v", receipt)
+	wantCode(t, <-delivered, protocol.NotRunning)
 }
 
 func TestRunAdmissionOrdersDelivery(t *testing.T) {
@@ -436,13 +435,11 @@ func runCase(t *testing.T, name string) [6]int32 {
 		check(t, <-terminal == nil, "terminal response failed")
 	case "idle-close-deliver":
 		h := startHarness(t, p, true, true)
-		p.deliverStart, p.closeStart, p.closeEnd = make(chan struct{}), make(chan struct{}), make(chan struct{})
-		delivered := async(h, "message.deliver", delivery, &DeliveryReceipt{})
-		<-p.deliverStart
+		p.closeStart, p.closeEnd = make(chan struct{}), make(chan struct{})
+		wantCode(t, h.Call(context.Background(), "message.deliver", delivery, &DeliveryReceipt{}), protocol.NotRunning)
 		closed := async(h, "session.close", target, &struct{}{})
 		<-p.closeStart
 		checkDelivery(t, h, "rejected")
-		check(t, <-delivered == nil, "cancelled delivery response failed")
 		close(p.closeEnd)
 		check(t, <-closed == nil, "close response failed")
 	case "environment":
@@ -565,8 +562,11 @@ func TestWorkerWrittenAndUncertainSubmission(t *testing.T) {
 		{"post-submission transport loss", DeliveryReceipt{}, &ProtocolError{Code: protocol.Internal, Message: "internal", Data: json.RawMessage(`"transport lost after submission; consumption unknown"`)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			product := &fakeProduct{deliveryResult: &test.receipt, deliveryError: test.err}
+			product := &fakeProduct{deliveryResult: &test.receipt, deliveryError: test.err, started: make(chan *Run), release: make(chan struct{})}
 			h := startHarness(t, product, true, true)
+			running := async(h, "turn.run", protocol.TurnRunRequest{SessionID: target.SessionID, Input: "block"}, &TurnResult{})
+			<-product.started
+			t.Cleanup(func() { close(product.release); <-running })
 			var receipt DeliveryReceipt
 			err := h.Call(context.Background(), "message.deliver", delivery, &receipt)
 			var failure *ProtocolError

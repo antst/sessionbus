@@ -23,7 +23,7 @@ func decodeForward(raw []byte, source string) (Forward, string, error) {
 		From    map[string]json.RawMessage `json:"from"`
 		Request map[string]json.RawMessage `json:"request"`
 	}
-	if json.Unmarshal(raw, &fields) != nil || len(fields.From["name"]) != 0 && value.From.Name == "" || validateTraceRequest(value.Request, fields.Request) != nil {
+	if json.Unmarshal(raw, &fields) != nil || len(fields.From["name"]) != 0 && value.From.Name == "" || validateTraceRequest(value.Request, fields.Request) != nil || validateCompletionRequest(value.Request, fields.Request) != nil {
 		return Forward{}, "", errFrame
 	}
 	host, err := targetHost(value.Request)

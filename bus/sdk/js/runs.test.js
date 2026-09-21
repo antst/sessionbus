@@ -14,7 +14,7 @@ async function cursor(t, options = {}) {
     hello: () => ({ product: "fixture", supported_open_fields: [], extra_arguments: [], supports_message_run: !!options.supportsWake }),
     open: async () => { opens++; await options.open?.(); return { session_id: "native" }; },
     run: async (...args) => { runs++; return options.run ? options.run(...args) : done; },
-    interrupt: async (...args) => { await options.interrupt?.(...args); }, deliver: async () => ({ disposition: "written" }), close: async () => { await options.close?.(); },
+    interrupt: async (...args) => { await options.interrupt?.(...args); }, deliver: async (...args) => options.deliver ? options.deliver(...args) : ({ disposition: "written" }), close: async () => { await options.close?.(); },
   };
   const worker = new Worker(callbacks, { SESSIONBUS_SOCKET: "/fixture", SESSIONBUS_LAUNCH_TOKEN: "token" }, { connect: () => client });
   const handle = worker._handle.bind(worker); worker._handle = (r) => { options.observe?.(r); handle(r); };
@@ -29,6 +29,24 @@ async function cursor(t, options = {}) {
 }
 const execute = (bus, overrides = {}) => bus.call("turn.execute", { ...ref, input: "work", ...overrides });
 const code = (value) => (error) => error instanceof ProtocolError && error.code === value;
+test("ended-run delivery is refused before native submission, before and after ready ack", async (t) => {
+  const ready = deferred(); let delivered = 0;
+  const { bus } = await cursor(t, { ready: (request) => ready.resolve(request), deliver: () => { delivered++; return { disposition: "written" }; } });
+  await execute(bus); const request = await ready.promise;
+  const message = structuredClone(delivery); delete message.run_id;
+  await assert.rejects(bus.call("message.deliver", message), code(-32004));
+  await bus.result(request, {}); await bus.call("turn.wait", ref);
+  await assert.rejects(bus.call("message.deliver", message), code(-32004));
+  assert.equal(delivered, 0);
+});
+test("product pre-submission handoff refusal preserves NotRunning", async (t) => {
+  const release = deferred();
+  const { bus } = await cursor(t, { run: async () => { await release.promise; return done; }, deliver: () => { throw new ProtocolError({ code: -32004, message: "not_running" }); } });
+  await execute(bus);
+  const message = structuredClone(delivery); delete message.run_id;
+  await assert.rejects(bus.call("message.deliver", message), code(-32004));
+  release.resolve(); await bus.call("turn.wait", ref);
+});
 for (const action of [false, true]) for (const timeout_ms of [undefined, 60000]) for (const collect of ["status", "wait"]) {
   test(`canceled ${action ? "action" : "direct"} wait, timeout=${timeout_ms}, replacement ${collect}`, async (t) => {
     const release = deferred(), admitted = deferred();

@@ -27,11 +27,11 @@ the TUI must supply the interactive peer lifecycle without replacing DSH's sessi
 
 ## Native protocol responsibilities
 
-The TUI integration speaks [Native Sessionbus Presence Protocol v1](../specs/NATIVE-PEER-PROTOCOL.md)
+The TUI integration speaks [Universal Session Protocol](UNIVERSAL-SESSION-PROTOCOL.md)
 directly over `presence.sock`:
 
 - `session.hello` reports DSH's native ID, stored title, launch groups, product `dsh`, and live info;
-- `session.update` follows product title/info changes;
+- same-ID `rehello(signal, name, info)` follows product title/info changes;
 - structured `message.deliver` is rendered once and submitted through `Agent.steer`;
 - peer and lane tool requests use the first-class v1 methods; and
 - one connection is held per live root, so EOF means that root is gone.

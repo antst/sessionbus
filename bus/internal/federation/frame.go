@@ -28,11 +28,13 @@ type Caller struct {
 }
 
 type PublicRequest struct {
-	Method    string            `json:"method"`
-	Params    json.RawMessage   `json:"params"`
-	MessageID string            `json:"message_id,omitempty"`
-	Trace     bool              `json:"trace,omitempty"`
-	TraceCopy *TraceDestination `json:"trace_copy,omitempty"`
+	// Completion is daemon-only provenance, never a public message.send field.
+	Completion bool              `json:"completion,omitempty"`
+	Method     string            `json:"method"`
+	Params     json.RawMessage   `json:"params"`
+	MessageID  string            `json:"message_id,omitempty"`
+	Trace      bool              `json:"trace,omitempty"`
+	TraceCopy  *TraceDestination `json:"trace_copy,omitempty"`
 }
 
 type Forward struct {
