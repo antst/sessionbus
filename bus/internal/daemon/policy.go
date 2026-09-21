@@ -186,11 +186,7 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 	// Ack precedes any subsequent worker command; the SDK publishes its cursor
 	// in CallObserved before dispatching those frames.
 	s.result(frame, struct{}{})
-	deferred := s.deferredDeliveries
-	s.deferredDeliveries = nil
-	for _, request := range deferred {
-		s.issue(request)
-	}
+	s.startDeferredDelivery()
 	if policy.Notify && !fromCompletion && s.closeCall == nil {
 		target := policy.NotifyTarget
 		if !policy.Persistent {

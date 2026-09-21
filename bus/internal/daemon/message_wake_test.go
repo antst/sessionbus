@@ -55,9 +55,12 @@ func TestDeliveryCrossingTurnEndWakesOnce(t *testing.T) {
 					t.Fatal("crossing delivery not retained")
 				}
 				select {
-				case <-reply:
-					t.Fatal("receipt settled before native admission")
+				case got := <-reply:
+					if got.code != 0 || got.value.(*protocol.DeliveryReceipt).Disposition != "queued_for_next_turn" {
+						t.Fatalf("scheduled receipt %+v", got)
+					}
 				default:
+					t.Fatal("active sender was blocked")
 				}
 				ready()
 			}
@@ -67,11 +70,55 @@ func TestDeliveryCrossingTurnEndWakesOnce(t *testing.T) {
 				t.Fatalf("handoff changed delivery: %+v", input)
 			}
 			s.receiveResponse(protocol.Frame{ID: second.ID, Result: json.RawMessage(`{"disposition":"written"}`)})
-			if got := <-reply; got.code != 0 || got.value.(*protocol.DeliveryReceipt).Disposition != "written" {
-				t.Fatalf("receipt %+v", got)
+			if readyFirst {
+				if got := <-reply; got.code != 0 || got.value.(*protocol.DeliveryReceipt).Disposition != "written" {
+					t.Fatalf("receipt %+v", got)
+				}
+			} else if len(reply) != 0 {
+				t.Fatal("scheduled delivery answered twice")
 			}
 			if len(s.deferredDeliveries) != 0 || s.runSequence != 2 {
 				t.Fatal("duplicate admission")
+			}
+		})
+	}
+}
+
+// Each original run is blocked on its outgoing send. Neither may require the
+// other's turn.ready before receiving a queue receipt.
+func TestMutualActiveSendsDoNotWaitForEachOthersTurnEnd(t *testing.T) {
+	for _, name := range []string{"A-to-B", "B-to-A"} {
+		t.Run(name, func(t *testing.T) {
+			s, reader, _ := policySession(t, true, 0)
+			s.identity.row.Policy.Notify = false
+			s.runID, s.runGeneration, s.runSequence = "g/1", "g", 1
+			reply := make(chan answer, 1)
+			s.issue(routedRequest{destination: s.identity, method: "message.deliver", params: protocol.DeliveryRequest{MessageID: name, From: protocol.DeliverySource{SessionID: "other@local", Product: "peer", Groups: []string{}}, Body: "reply automatically"}, reply: reply})
+			deliver := policyFrame(t, reader)
+			s.receiveResponse(protocol.Frame{ID: deliver.ID, Error: &protocol.RPCError{Code: protocol.NotRunning, Message: "not_running"}})
+			select {
+			case got := <-reply:
+				if got.code != 0 || got.value.(*protocol.DeliveryReceipt).Disposition != "queued_for_next_turn" {
+					t.Fatalf("queue admission: %+v", got)
+				}
+			default:
+				t.Fatal("send waits for recipient turn.ready: mutually sending active runs deadlock")
+			}
+			s.turnReady(protocol.Frame{ID: 77, Method: "turn.ready"}, &protocol.TurnReady{SessionID: s.identity.row.SessionID, RunID: "g/1", State: "done", Outcome: "completed"})
+			if ack := policyFrame(t, reader); ack.ID != 77 || ack.Request {
+				t.Fatal("ready acknowledgement did not precede automatic run")
+			}
+			next := policyFrame(t, reader)
+			var input protocol.DeliveryRequest
+			must(t, json.Unmarshal(next.Params, &input))
+			if input.RunID != "g/2" || input.MessageID != name {
+				t.Fatalf("missing automatic follow-up: %+v", input)
+			}
+			s.receiveResponse(protocol.Frame{ID: next.ID, Result: json.RawMessage(`{"disposition":"injected"}`)})
+			select {
+			case <-reply:
+				t.Fatal("sender received a second receipt")
+			default:
 			}
 		})
 	}

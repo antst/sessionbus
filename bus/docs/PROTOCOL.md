@@ -243,7 +243,7 @@ Its result is exactly one closed receipt: `written`, `injected`,
 
 > `written` means the integration completed one local transport write of the complete frame addressed to the native session captured for that delivery, using that session's product-owned carrier, with no explicit transport/native error observed before the result was emitted. It acknowledges only the local write. It does not assert that the native process parsed the frame, accepted its session ID, scheduled or retained the message, presented it, or consumed it. A native EOF without response bytes adds no acknowledgment. Absence of an observed rejection is not proof of acceptance.
 >
-> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges demonstrated native staging awaiting automatic processing, not a promise of durability or proof of model consumption. It must not mean waiting for another human prompt or explicit Run. Products must preserve the idle-wake and active-to-idle handoff requirement. Legacy adapters that only retain input passively are not conforming. A completed local write alone qualifies only as `written`; `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
+> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges input retained for automatic processing. For peers this requires demonstrated native scheduling; for lanes it can also acknowledge the daemon's bounded queue after a definite pre-submission refusal. Neither means native admission, durability, or proof of model consumption. It must not mean waiting for another human prompt or explicit Run. Products must preserve the idle-wake and active-to-idle handoff requirement. Legacy adapters that only retain input passively are not conforming. A completed local write alone qualifies only as `written`; `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
 >
 > The Claude interactive integration returns `written` at that local completion boundary. It preserves the captured native session ID and frame contents across asynchronous work; a later identity report never retargets the frame. A native-adapter `rejected` result requires an observed native refusal or a failure before any native submission, with a reason that identifies that boundary. An uncertain write or post-submission transport loss must not be represented as a native refusal or proof of non-consumption.
 
@@ -451,20 +451,37 @@ write failure closes the connection so the original request cannot hang.
 Active delivery keeps the ordinary native admission path and Run token. It must
 be consumed by that turn or automatically continued; no human prompt is needed.
 At the final native handoff, the product synchronizes delivery with native turn
-completion. If the turn ended and nothing was written, steered or queued, it
-returns `ProtocolError(-32004, not_running)`. The kit also returns this error
+completion. If the turn ended, or the product has no source-proven automatic
+active-delivery path, and nothing was written, steered or queued, it returns
+`ProtocolError(-32004, not_running)`. Safe native mid-turn admission remains the
+preferred path; this refusal must precede any native submission. The kit also returns this error
 without invoking the product when the run is already absent or its context is
 cancelled. The product check is still required: completion may race the kit's
 check. Never return this error after native admission or an uncertain write.
 
-For this pre-submission refusal on an ordinary lane delivery, the daemon retains
-the original routed RPC under its existing 256-call bound. Once `turn.ready` is
-acknowledged, it admits that same message as new work; if ready already arrived,
-it does so immediately. Message ID, source, body and daemon origin markers are
-preserved. The original sender receives the new run's truthful admission receipt,
-not a synthetic queued receipt. Close/disconnect settle held calls explicitly.
-Peers and already-seeded runs never enter this retry path. Internal/no-receipt
-uncertainty is never retried.
+For this pre-submission refusal on an ordinary lane delivery, if ready already
+arrived, the daemon immediately admits the message as new work and returns its
+native receipt. Otherwise it reserves one future worker record, retains the
+message under its existing 256-call bound, and immediately answers the sender
+`queued_for_next_turn`. It must not hold the sender RPC until the recipient's
+turn ends: two active agents awaiting each other's send would deadlock.
+
+After the current `turn.ready` acknowledgment, the daemon automatically starts
+one retained message as a new Run; subsequent retained messages start FIFO after
+each preceding Run ends. No human prompt, public Run, or sender retry is needed.
+Message ID, source, body and daemon origin markers are preserved. Future record
+reservations count alongside all unacknowledged Run records against the worker's
+256-record bound; completion does not free a record. Successful matching-worker
+`turn.ack` releases capacity. A full queue or record budget returns Busy before
+queue acknowledgment, and explicit starts cannot consume reserved slots.
+
+Queue admission is in-memory, not durable or a native receipt. Close, disconnect,
+and daemon loss discard queued work; the original receipt is not retracted.
+When communication logging is enabled, later native admission or queue loss is
+recorded on the recipient daemon with the original message ID. There is no second
+sender receipt. The new Run retains its result and follows the normal completion
+notification rule. Peers and already-seeded runs never enter this retry path.
+Internal/no-receipt uncertainty is never retried.
 
 #### `turn.status`, `turn.wait`, and `turn.ack`
 

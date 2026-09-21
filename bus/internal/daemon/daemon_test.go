@@ -57,6 +57,12 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(os.Getenv("STDERR_PARENT_READY"), []byte("ready"), 0o600)
 		os.Exit(7)
 	}
+	if strings.HasPrefix(name, "mutual-worker") {
+		product := &mutualSendProduct{fixtureProduct: fixtureProduct{product: name}}
+		product.worker = sessionkit.NewWorker(product)
+		_ = product.worker.Serve(context.Background())
+		os.Exit(0)
+	}
 	if strings.HasPrefix(name, "wake-worker") || strings.HasPrefix(name, "fixture-worker") || strings.HasPrefix(name, "open-exit-worker") || strings.HasPrefix(name, "fixed-worker") || strings.HasPrefix(name, "error-worker") || strings.HasPrefix(name, "close-error-worker") || strings.HasPrefix(name, "sequence-worker") || strings.HasPrefix(name, "racing-worker") {
 		worker := sessionkit.NewWorker(&fixtureProduct{product: name})
 		_ = worker.Serve(context.Background())

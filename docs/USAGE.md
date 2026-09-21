@@ -259,7 +259,7 @@ leave gaps; neither logs nor traces establish model consumption.
 | --- | --- |
 | `written` | A complete local transport write without an observed error; not native acceptance or reading. |
 | `injected` | Identity-bound native admission; not understanding or agreement. |
-| `queued_for_next_turn` | Native staging awaiting automatic processing; not durability or proof of consumption. Passive staging for a later human prompt is not conforming. |
+| `queued_for_next_turn` | Automatically scheduled input: native scheduling for peers, or a bounded daemon queue for lanes after pre-submission refusal. No later human prompt or Run is required. Not native admission, durability, or proof of consumption; close/disconnect discards queued work. |
 | `rejected` / `not_submitted` | Proven refusal before dispatch on the documented routing path. |
 | `rejected` / `no_receipt` | No usable receipt after dispatch; the operation may have happened. Do not automatically resend. |
 
