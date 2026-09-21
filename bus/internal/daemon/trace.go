@@ -289,6 +289,11 @@ func (s *session) finishTrace(frame protocol.Frame, result any, code int, extra 
 		byParent[key] = append(byParent[key], ref)
 	}
 	for _, refs := range byParent {
+		// This parent already has its own message and settled send result.
+		// Omit only its copy; other eligible parents still receive theirs.
+		if captured.from.SessionID == refs[0].Owner.SessionID {
+			continue
+		}
 		// The original already went only to this parent. Check the complete
 		// settled aggregate, before projecting it to this parent's children;
 		// unresolved targets and fanout must still produce useful copies.

@@ -234,12 +234,14 @@ results. The copy has a new message ID; its JSON body has `kind: sessionbus.trac
 the original `message_id`, `from`, permitted recipients/results, and an optional
 `body`. It is a daemon report, not a request from the original sender. Do not
 reply to its generated daemon identity. Copies and their completion pointers
-do not generate more copies. A parent receives no redundant trace copy when it
-is the sole resolved recipient of the original message, including an ordinary
-lane completion pointer. Sends to other recipients or to the parent plus other
-targets remain traced; unresolved targets are not assumed to be the parent.
-This exception uses recipient identity, even if its settled receipt is rejected
-or uncertain; it does not redefine delivery success or retry the original.
+do not generate more copies. A parent receives no redundant trace copy of its
+own sends, or when it is the sole resolved recipient of the original message,
+including an ordinary lane completion pointer. Other eligible parents still
+receive their copies. For messages from another sender, sends to other recipients
+or to the parent plus other targets remain traced; unresolved targets are not
+assumed to be the parent. These exceptions use sender and recipient identity,
+even if a settled receipt is rejected or uncertain; they do not redefine
+delivery success or retry the original.
 
 Normal parent delivery policy applies: an idle-run parent can start a Run,
 while a staging parent receives the message for a later turn. Copy delivery
