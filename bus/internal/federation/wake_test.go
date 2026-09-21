@@ -42,6 +42,31 @@ func TestCompletionProvenanceIsPrivateAndStrict(t *testing.T) {
 	}
 }
 
+func TestCompletionCaseVariantCannotBypassValidation(t *testing.T) {
+	for _, name := range []string{"Completion", "COMPLETION", "cOmPlEtIoN"} {
+		for _, shape := range []struct {
+			name, request string
+		}{
+			{"single", `"method":"message.send","params":{"target":"child@beta","message":"notice"},"message_id":"m"`},
+			{"group", `"method":"message.send","params":{"group":"team","host":"beta","message":"notice"},"message_id":"m"`},
+			{"multiple", `"method":"message.send","params":{"targets":["a@beta","b@beta"],"message":"notice"},"message_id":"m"`},
+			{"method", `"method":"session.list","params":{}`},
+			{"trace", `"method":"message.send","params":{"target":"child@beta","message":"notice"},"message_id":"m","trace_copy":{"session_id":"child@beta","lifetime":"generation"}`},
+		} {
+			t.Run(name+"/"+shape.name, func(t *testing.T) {
+				caller, err := json.Marshal(testTraceCaller())
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw := json.RawMessage(`{"from":` + string(caller) + `,"request":{` + shape.request + `,"` + name + `":true}}`)
+				if _, _, err := decodeForward(raw, "alpha"); err == nil {
+					t.Fatalf("case-variant completion bypassed validation: %s", raw)
+				}
+			})
+		}
+	}
+}
+
 func TestCompletionForwardingPreservesOriginOrRefusesLegacyLink(t *testing.T) {
 	for _, legacy := range []string{"", "alpha", "beta"} {
 		t.Run("legacy="+legacy, func(t *testing.T) {

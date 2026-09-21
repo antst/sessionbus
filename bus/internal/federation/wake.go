@@ -22,6 +22,11 @@ func SupportsWake(fd net.Conn) bool {
 func validateCompletionRequest(request PublicRequest, fields map[string]json.RawMessage) error {
 	raw, present := fields["completion"]
 	if !present {
+		// encoding/json also matches differently capitalized struct fields.
+		// Such a decoded marker must not bypass the checks below.
+		if request.Completion {
+			return errFrame
+		}
 		return nil
 	}
 	var enabled bool
