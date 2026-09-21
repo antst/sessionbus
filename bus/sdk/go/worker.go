@@ -300,14 +300,25 @@ func (w *Worker) interrupt(request *rpc.Request, run *Run, call bool) {
 }
 
 func (w *Worker) deliver(ctx context.Context, request *rpc.Request, run *Run) {
+	// The native Run can finish before this goroutine gets scheduled, while
+	// turn.ready is still in flight. No native submission has occurred here.
+	if run == nil || run.context.Err() != nil {
+		w.reply(w.conn.Error(request, protocol.NotRunning, nil))
+		return
+	}
 	receipt, err := w.product.Deliver(ctx, *request.Params.(*DeliveryRequest), run)
 	w.reply(w.deliveryReply(request, receipt, err))
 }
 
 func (w *Worker) deliveryReply(request *rpc.Request, receipt DeliveryReceipt, err error) error {
 	var failure *ProtocolError
-	if errors.As(err, &failure) && failure.Code == protocol.Internal {
-		return w.conn.Error(request, failure.Code, failure.Data)
+	if errors.As(err, &failure) {
+		if failure.Code == protocol.NotRunning {
+			return w.conn.Error(request, failure.Code, nil)
+		}
+		if failure.Code == protocol.Internal {
+			return w.conn.Error(request, failure.Code, failure.Data)
+		}
 	}
 	if err != nil {
 		receipt = DeliveryReceipt{Disposition: "rejected", Reason: err.Error()}

@@ -172,13 +172,15 @@ class Worker {
     try { await this.connection.result(request, {}); } catch { this.shutdown(); }
   }
   async _deliver(request, run) {
+    if (!run || run.controller.signal.aborted) { await this._replyError(request, -32004); return; }
     let receipt, failure;
     try { receipt = await this.callbacks.deliver(this.controller.signal, request.params, undefined, run); } catch (error) { failure = error; }
     try { await this._deliveryReply(request, receipt, failure); } catch {}
   }
   async _deliveryReply(request, receipt, failure) {
     try {
-      if (failure instanceof ProtocolError && failure.code === -32603) await this.connection.error(request, failure.code, failure.data);
+      if (failure instanceof ProtocolError && failure.code === -32004) await this.connection.error(request, failure.code);
+      else if (failure instanceof ProtocolError && failure.code === -32603) await this.connection.error(request, failure.code, failure.data);
       else await this.connection.result(request, failure ? { disposition: "rejected", reason: clean(failure) } : receipt);
     } catch (error) { this.shutdown(); throw error; }
   }

@@ -133,8 +133,8 @@ supplies its product-native bare `session_id` and an optional unqualified `name`
 qualifies the ID and any present name with its effective host before installing the peer. A worker instead supplies a
 one-use `launch_token`, its supported non-identity open fields, its ordered
 extra-argument descriptions, optionally the product version, and optional
-`supports_message_run` (default false). The daemon and kit reject
-`idle_message:"run"` before native Open unless this capability is true. The branches are mutually
+`supports_message_run`. Every managed worker must advertise this capability;
+the daemon rejects spawning a worker without it before native Open. The branches are mutually
 exclusive: a request with both discriminants or neither is invalid. A worker
 sends hello only after its product and plugin are app-ready, so hello success is
 the sole readiness fact. A peer ID matching a durable lane row is invalid. A
@@ -233,12 +233,17 @@ label order after deduplication. There is no multicast timeout.
 The daemon sends `message.deliver` to the target session with the message ID,
 authoritative canonical `id@host`, optional `name@host` source identity, and body.
 Every product implements delivery while idle and while a turn is running.
+Delivery is a request for work: an idle agent must start a native turn without
+a human prompt or a separate `run`. Active delivery joins native processing;
+an input crossing the active-to-idle boundary must still be processed
+automatically. Admission refusal, capacity failure, and uncertain transport
+must remain explicit; none may be disguised as successful passive storage.
 Its result is exactly one closed receipt: `written`, `injected`,
 `queued_for_next_turn`, or `rejected` with a nonempty reason.
 
 > `written` means the integration completed one local transport write of the complete frame addressed to the native session captured for that delivery, using that session's product-owned carrier, with no explicit transport/native error observed before the result was emitted. It acknowledges only the local write. It does not assert that the native process parsed the frame, accepted its session ID, scheduled or retained the message, presented it, or consumed it. A native EOF without response bytes adds no acknowledgment. Absence of an observed rejection is not proof of acceptance.
 >
-> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges a demonstrated staging path for a later explicit run: native staging or an adapter-owned, bounded, unsent in-memory queue. Adapter-owned staging is lost with its owner, does not start a run, and must never replay a message after an attempted native write. A completed local write alone does not qualify, and the receipt promises neither durability nor future consumption. Evidence of a later run's consumption may prove the tested staging path; it does not turn a future run into a fact at receipt time. `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
+> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges demonstrated native staging awaiting automatic processing, not a promise of durability or proof of model consumption. It must not mean waiting for another human prompt or explicit Run. Products must preserve the idle-wake and active-to-idle handoff requirement. Legacy adapters that only retain input passively are not conforming. A completed local write alone qualifies only as `written`; `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
 >
 > The Claude interactive integration returns `written` at that local completion boundary. It preserves the captured native session ID and frame contents across asynchronous work; a later identity report never retargets the frame. A native-adapter `rejected` result requires an observed native refusal or a failure before any native submission, with a reason that identifies that boundary. An uncertain write or post-submission transport loss must not be represented as a native refusal or proof of non-consumption.
 
@@ -329,21 +334,38 @@ already-written valid open response can commit; EOF first fails the spawn.
 The normalized `policy` contains `persistent`, `auto_close_ms`, `idle_message`,
 `notify`, and, when applicable, `owner_session_id` or `notify_target`.
 Fresh defaults are `persistent:false`, `auto_close_ms:60000`, and
-`idle_message:"stage"`. Zero disables auto-close; positive values are milliseconds
+`idle_message:"run"`. Idle wake is mandatory, not a policy choice. The
+legacy input `idle_message:"stage"` remains readable for compatibility but
+normalizes to `run`, including stored rows and resume. Zero disables auto-close; positive values are milliseconds
 up to 9223372036854. Persistence controls owner-exit cleanup independently of
-terminal auto-close and idle-message behavior. All four persistence/auto-close
+terminal auto-close. All four persistence/auto-close
 combinations are supported. Open performs no input and arms no deadline.
 
 On resume, persistence survives and may be promoted, never demoted. A
 nonpersistent lane acquires the resuming owner. Omitted auto-close resets to
-60000; custom or disabled grace must be supplied again. Omitted idle-message
-policy inherits. Parent-owned lanes notify their current owner by default;
+60000; custom or disabled grace must be supplied again. Idle-message behavior is always wake. The effective policy reports `run`. Parent-owned lanes notify their current owner by default;
 `notify:false` disables that delivery. An explicit `notify_target` may name that
 same owner; a different target is rejected.
 Fresh persistent lanes have no implicit target: `notify_target` enables it,
 `notify:true` requires a target, and `notify:false` clears it. A simultaneous
 false and target is invalid. Persistent resume preserves an omitted target;
 promotion preserves the prior enabled owner destination as its explicit target.
+
+Completion pointers are messages and wake idle recipients. To bound automatic
+notification chains, a run seeded by a completion pointer emits no automatic
+completion pointer of its own. Its output is still retained and collectable,
+including by a third-party owner who consequently receives no automatic notice
+for that run. Explicit sends made by the woken product remain ordinary messages.
+A trace-seeded run keeps the existing completion behavior.
+
+Completion origin is daemon-owned metadata, absent from public message params.
+The authenticated federation envelope carries `completion:true` only for a
+single-target generated pointer. It survives delivery hold/reseed, but is not
+inherited by the product's explicit sends. Updated links negotiate TLS ALPN
+`sessionbus-wake/1`, which also supports trace and roster. Across an older link,
+a marked completion forward returns `forward_lost` without dropping the marker
+or closing healthy federation; ordinary sends continue. Deploy the matching hub
+and host daemons to preserve cross-host completion notifications.
 
 The authenticated spawning caller owns nonpersistent lifetime. Same-ID peer
 supersession atomically transfers that lifetime before retiring the old
@@ -416,9 +438,9 @@ validated by the kit before native dispatch. Only refused provisional IDs may
 be reused. Returned session IDs remain canonical across federation. Resume
 starts a new generation and does not recover answers from the retired worker.
 
-Idle delivery with `idle_message:"stage"` uses ordinary `deliver` and starts no
-run or timer. With `idle_message:"run"`, the daemon reserves the same run slot
-and adds its private `run_id` to the original `message.deliver`. The Worker
+For every idle lane delivery, the daemon reserves the ordinary run slot
+and adds its private `run_id` to the original `message.deliver`. There is no
+passive delivery mode and no additional caller command is required. The Worker
 invokes `RunInput` with exactly one text input or full delivery seed. The seed
 preserves original message ID, source and body; its private transport run ID may
 be removed before the callback. `Run.ReportDelivery` answers that original RPC
@@ -426,7 +448,23 @@ once with the observed native receipt and may block on its transport write.
 Adapters must call it outside native reader locks. Missing or uncertain receipt
 uses Internal/no_receipt, not a guessed refusal. Invalid receipt encoding or
 write failure closes the connection so the original request cannot hang.
-Active delivery keeps the ordinary native injection/staging path and Run token.
+Active delivery keeps the ordinary native admission path and Run token. It must
+be consumed by that turn or automatically continued; no human prompt is needed.
+At the final native handoff, the product synchronizes delivery with native turn
+completion. If the turn ended and nothing was written, steered or queued, it
+returns `ProtocolError(-32004, not_running)`. The kit also returns this error
+without invoking the product when the run is already absent or its context is
+cancelled. The product check is still required: completion may race the kit's
+check. Never return this error after native admission or an uncertain write.
+
+For this pre-submission refusal on an ordinary lane delivery, the daemon retains
+the original routed RPC under its existing 256-call bound. Once `turn.ready` is
+acknowledged, it admits that same message as new work; if ready already arrived,
+it does so immediately. Message ID, source, body and daemon origin markers are
+preserved. The original sender receives the new run's truthful admission receipt,
+not a synthetic queued receipt. Close/disconnect settle held calls explicitly.
+Peers and already-seeded runs never enter this retry path. Internal/no-receipt
+uncertainty is never retried.
 
 #### `turn.status`, `turn.wait`, and `turn.ack`
 
@@ -442,7 +480,9 @@ waits without a local polling limit. Both return `{session_id,run_id,state}`:
 A missing or retired record is `unknown_session` while disconnected lanes use
 `not_connected`. At most 256 active reads are admitted, independently of the
 existing transport correlation bound. Capacity is reserved before new work and
-older output is never silently evicted.
+older output is never silently evicted. A full 256-record cursor rejects new
+message-triggered work with explicit Busy backpressure; owners must collect and
+acknowledge records. Delivery does not silently evict or auto-ack results.
 
 `turn.ack {session_id,run_id}` consumes only the oldest terminal record and
 returns `{}`. A repeat acknowledgment of an issued, already consumed ID in the
@@ -468,8 +508,7 @@ processing, not native receipt or output collection.
 When notification is enabled, the daemon sends an ordinary peer message under
 the actual lane identity to its owner or persistent notify target. The body is
 only a lane/run collection pointer, never the answer or admission receipt.
-The receiving product's normal native delivery policy applies, including its
-own stage/run selection. No-notify omits it. Failed/unavailable delivery consumes
+The receiving product's normal native delivery policy applies, including mandatory idle wake. No-notify omits it. Failed/unavailable delivery consumes
 nothing, extends no deadline and creates no retained notification or retry.
 
 #### `turn.interrupt`
@@ -668,10 +707,10 @@ and closes the connection without writing one.
 | `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, run start/read/wait/ack, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
 | `-32002` | `not_connected` | Run start/read/wait/ack or `turn.interrupt` when a durable row has no connection. |
 | `-32003` | `busy` | Run admission when the target already has an outstanding run or 256 retained records; out-of-order ack; a cursor read after close admission; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
-| `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run. |
+| `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run; or an ordinary worker delivery refused before any native admission at a finished turn boundary, for daemon hold/reseed. |
 | `-32005` | `already_connected` | Resume `lane.spawn` when the durable row already has its worker connection. |
 | `-32007` | `unknown_product` | `lane.describe` or new `lane.spawn` when the product token is invalid or its binary is absent from the target host's service PATH. |
-| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration, or `idle_message:"run"` is selected without `supports_message_run:true`. |
+| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration, or the worker lacks mandatory `supports_message_run:true`. |
 | `-32009` | `spawn_failed` | `lane.describe` or `lane.spawn` when exec, hello, open, or native creation fails before commit. |
 | `-32010` | `timeout` | `lane.describe` or `lane.spawn` when its one spawn/open transaction bound expires. |
 | `-32011` | `not_committed` | Any worker-originated client-to-daemon session method received after hello but before product-session-ID commit. |

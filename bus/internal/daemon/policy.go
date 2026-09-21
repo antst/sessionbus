@@ -26,7 +26,7 @@ type ownership struct {
 type ownerEndEvent struct{ owner *ownership }
 
 func normalizePolicy(input *protocol.LaneSpawnRequest, previous *protocol.LanePolicy, ownerID string) (*protocol.LanePolicy, error) {
-	value := protocol.LanePolicy{AutoCloseMS: defaultAutoCloseMS, IdleMessage: "stage", Notify: true, OwnerSessionID: ownerID}
+	value := protocol.LanePolicy{AutoCloseMS: defaultAutoCloseMS, IdleMessage: "run", Notify: true, OwnerSessionID: ownerID}
 	if previous != nil {
 		value = *previous
 		value.AutoCloseMS = defaultAutoCloseMS
@@ -41,9 +41,9 @@ func normalizePolicy(input *protocol.LaneSpawnRequest, previous *protocol.LanePo
 	if input.AutoCloseMS != nil {
 		value.AutoCloseMS = *input.AutoCloseMS
 	}
-	if input.IdleMessage != "" {
-		value.IdleMessage = input.IdleMessage
-	}
+	// Legacy callers and stored rows may still say "stage". Delivery itself
+	// requests work; passive staging is no longer a selectable lane behavior.
+	value.IdleMessage = "run"
 	if value.Persistent {
 		value.OwnerSessionID = ""
 		if previous == nil {
@@ -129,6 +129,7 @@ func (s *session) setDeadline(at time.Time) {
 }
 func (s *session) reserveRun() string {
 	s.runFromTrace = false
+	s.runFromCompletion = false
 	s.previousDeadline = s.deadline
 	s.setDeadline(time.Time{})
 	if s.runGeneration == "" {
@@ -144,6 +145,7 @@ func (s *session) refuseRun(id string) {
 	}
 	s.runID = ""
 	s.runFromTrace = false
+	s.runFromCompletion = false
 	s.runSequence-- // Only a refused, not-yet-admitted reservation can be reused.
 	s.daemon.directory.finishRun(s.identity, s)
 	s.setDeadline(s.previousDeadline)
@@ -173,8 +175,9 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 	}
 	s.logRun(commslog.TurnReady, value.RunID, commslog.Settled, value.Outcome)
 	s.runID = ""
-	fromTrace := s.runFromTrace
+	fromTrace, fromCompletion := s.runFromTrace, s.runFromCompletion
 	s.runFromTrace = false
+	s.runFromCompletion = false
 	s.daemon.directory.finishRun(s.identity, s)
 	policy := s.identity.row.Policy
 	if value.State == "done" && policy.AutoCloseMS > 0 && s.closeCall == nil {
@@ -183,7 +186,12 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 	// Ack precedes any subsequent worker command; the SDK publishes its cursor
 	// in CallObserved before dispatching those frames.
 	s.result(frame, struct{}{})
-	if policy.Notify && s.closeCall == nil {
+	deferred := s.deferredDeliveries
+	s.deferredDeliveries = nil
+	for _, request := range deferred {
+		s.issue(request)
+	}
+	if policy.Notify && !fromCompletion && s.closeCall == nil {
 		target := policy.NotifyTarget
 		if !policy.Persistent {
 			target = policy.OwnerSessionID
@@ -192,7 +200,7 @@ func (s *session) turnReady(frame protocol.Frame, value *protocol.TurnReady) {
 			body := fmt.Sprintf("Lane %s run %s is %s. Collect with the public wait action (session_id=%s, run_id=%s), then use the public ack action after collecting.", value.SessionID, value.RunID, value.State, value.SessionID, value.RunID)
 			// A trace-triggered Run keeps its normal completion pointer, but the
 			// pointer is not a new trace source. Remote legs never emit copies.
-			wait := s.daemon.directory.forwardLocalTrace(s.federationCaller(), s.identity, "message.send", &protocol.MessageSendRequest{Target: target, Message: body}, "", !fromTrace, nil)
+			wait := s.daemon.directory.forwardLocalTrace(s.federationCaller(), s.identity, "message.send", &protocol.MessageSendRequest{Target: target, Message: body}, "", !fromTrace, nil, true)
 			s.owned++
 			go func() { _, _ = wait(s.identity.done); s.inbox <- replyEvent{} }()
 		}

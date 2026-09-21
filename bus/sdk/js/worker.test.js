@@ -41,10 +41,10 @@ class FakeProduct {
     if (this.deliverRun) {
       this.deliverRun.resolve(run);
       if (this.deliverRelease) await this.deliverRelease.promise;
-      if (!run) return { disposition: "queued_for_next_turn" };
+      if (!run) throw new ProtocolError({ code: -32004, message: "not_running" });
       const state = await Promise.race([run.Done.then(() => "done"), run.AdmittedDone.then(() => "admitted")]);
       this.admissionSelected?.resolve(); if (this.afterAdmission) await this.afterAdmission.promise;
-      if (state === "done" || run.finished) return { disposition: "queued_for_next_turn" };
+      if (state === "done" || run.finished) throw new ProtocolError({ code: -32004, message: "not_running" });
       this.nativeEvents?.push("steer"); this.steered?.resolve(); return { disposition: "injected" };
     }
     if (this.outbound) await this.worker.caller.list({}); return { disposition: "injected" };
@@ -52,16 +52,16 @@ class FakeProduct {
   async close(cancel, request) { this.calls[5]++; this.closeSignal = cancel; this.closeRequest = request; this.closeAborted = cancel.aborted; this.closeStart?.resolve(); if (this.closeEnd) await this.closeEnd.promise; if (this.closeError) throw this.closeError; }
 }
 
-test("worker passes nil run to idle delivery", async (t) => {
-  const product = new FakeProduct(); product.deliverRun = deferred(); const { daemon } = await harness(t, product); const delivered = daemon.call("message.deliver", delivery);
-  assert.equal(await product.deliverRun.promise, null); assert.equal((await delivered).disposition, "queued_for_next_turn");
+test("worker idle delivery requires a seed", async (t) => {
+  const product = new FakeProduct(); const { daemon } = await harness(t, product);
+  await errorCode(daemon.call("message.deliver", delivery), -32004); assert.equal(product.calls[4], 0);
 });
 
 test("worker delivery keeps its admission run across terminal", async (t) => {
   const product = new FakeProduct(); product.started = deferred(); product.release = deferred(); product.deliverRun = deferred(); product.deliverRelease = deferred(); const { daemon } = await harness(t, product);
   const running = daemon.call("turn.run", { ...target, input: "block" }); const run = await product.started.promise, delivered = daemon.call("message.deliver", delivery); assert.equal(await product.deliverRun.promise, run);
   product.release.resolve(); await running; await run.Done; let admitted = false; run.AdmittedDone.then(() => { admitted = true; }); await Promise.resolve(); assert.equal(admitted, false);
-  product.deliverRelease.resolve(); assert.equal((await delivered).disposition, "queued_for_next_turn");
+  product.deliverRelease.resolve(); await errorCode(delivered, -32004);
 });
 
 test("run admission orders active delivery", async (t) => {
@@ -73,7 +73,7 @@ test("run admission orders active delivery", async (t) => {
 test("finished run wins after admission is selected", async (t) => {
   const product = new FakeProduct(); product.started = deferred(); product.release = deferred(); product.admit = deferred(); product.deliverRun = deferred(); product.nativeEvents = []; product.admissionSelected = deferred(); product.afterAdmission = deferred(); const { daemon } = await harness(t, product);
   const running = daemon.call("turn.run", { ...target, input: "admit" }); const run = await product.started.promise, delivered = daemon.call("message.deliver", delivery); assert.equal(await product.deliverRun.promise, run);
-  product.admit.resolve(); await product.admissionSelected.promise; product.release.resolve(); await running; await run.Done; product.afterAdmission.resolve(); assert.equal((await delivered).disposition, "queued_for_next_turn"); assert.deepEqual(product.nativeEvents, ["input"]);
+  product.admit.resolve(); await product.admissionSelected.promise; product.release.resolve(); await running; await run.Done; product.afterAdmission.resolve(); await errorCode(delivered, -32004); assert.deepEqual(product.nativeEvents, ["input"]);
 });
 
 test("connection write failure rejects once", async (t) => {
@@ -270,7 +270,10 @@ for (const row of rows) test(`lifecycle: ${row.name}`, async (t) => {
       const running = daemon.call("turn.run", { ...target, input: "fail" }); await entered.promise; await errorCode(daemon.call("turn.interrupt", target), -32004); release.resolve(); await running; break;
     }
     case "idle-close-deliver": {
-      product.deliverStart = deferred(); product.closeStart = deferred(); product.closeEnd = deferred(); const { daemon } = await harness(t, product); const delivering = daemon.call("message.deliver", delivery); await product.deliverStart.promise; const closing = daemon.call("session.close", target); await product.closeStart.promise; assert.equal((await daemon.call("message.deliver", delivery)).reason, "closing"); await delivering; product.closeEnd.resolve(); await closing; break;
+      product.closeStart = deferred(); product.closeEnd = deferred(); const { daemon } = await harness(t, product);
+      await errorCode(daemon.call("message.deliver", delivery), -32004);
+      const closing = daemon.call("session.close", target); await product.closeStart.promise;
+      assert.equal((await daemon.call("message.deliver", delivery)).reason, "closing"); product.closeEnd.resolve(); await closing; break;
     }
     case "environment": {
       const reads = {}, env = new Proxy({ SESSIONBUS_LAUNCH_TOKEN: "token", SESSIONBUS_LOCAL_KEY: "key", SESSIONBUS_SOCKET: "/fixture/socket" }, { get(object, name) { reads[name] = (reads[name] || 0) + 1; return object[name]; } }); product.env = env;
@@ -329,7 +332,9 @@ for (const mode of ["peer", "worker"]) test(`${mode} written and uncertain nativ
   };
   let daemon;
   if (mode === "worker") {
-    const product = new FakeProduct(); product.deliver = admit; ({ daemon } = await harness(t, product));
+    const product = new FakeProduct(); product.deliver = admit; product.started = deferred(); product.release = deferred(); ({ daemon } = await harness(t, product));
+    const running = daemon.call("turn.run", { ...target, input: "block" }); await product.started.promise;
+    t.after(async () => { product.release.resolve(); await running.catch(() => {}); });
   } else {
     const endpoint = peerEndpoint(); daemon = endpoint.daemon;
     const peer = connectPeer({ product: "native-product", session_id: "target", groups: [], info: {} }, admit, { SESSIONBUS_SOCKET: "/fixture/socket" }, { connect: () => endpoint.client, schedule: () => {} });

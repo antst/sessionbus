@@ -139,8 +139,8 @@ supplies its product-native bare `session_id` and an optional unqualified `name`
 qualifies the ID and any present name with its effective host before installing the peer. A worker instead supplies a
 one-use `launch_token`, its supported non-identity open fields, its ordered
 extra-argument descriptions, optionally the product version, and optional
-`supports_message_run` (default false). The daemon and kit reject
-`idle_message:"run"` before native Open unless this capability is true. The branches are mutually
+`supports_message_run`. Every managed worker must advertise this capability;
+the daemon rejects spawning a worker without it before native Open. The branches are mutually
 exclusive: a request with both discriminants or neither is invalid. A worker
 sends hello only after its product and plugin are app-ready, so hello success is
 the sole readiness fact. A peer ID matching a durable lane row is invalid. A
@@ -239,12 +239,17 @@ label order after deduplication. There is no multicast timeout.
 The daemon sends `message.deliver` to the target session with the message ID,
 authoritative canonical `id@host`, optional `name@host` source identity, and body.
 Every product implements delivery while idle and while a turn is running.
+Delivery is a request for work: an idle agent must start a native turn without
+a human prompt or a separate `run`. Active delivery joins native processing;
+an input crossing the active-to-idle boundary must still be processed
+automatically. Admission refusal, capacity failure, and uncertain transport
+must remain explicit; none may be disguised as successful passive storage.
 Its result is exactly one closed receipt: `written`, `injected`,
 `queued_for_next_turn`, or `rejected` with a nonempty reason.
 
 > `written` means the integration completed one local transport write of the complete frame addressed to the native session captured for that delivery, using that session's product-owned carrier, with no explicit transport/native error observed before the result was emitted. It acknowledges only the local write. It does not assert that the native process parsed the frame, accepted its session ID, scheduled or retained the message, presented it, or consumed it. A native EOF without response bytes adds no acknowledgment. Absence of an observed rejection is not proof of acceptance.
 >
-> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges a demonstrated staging path for a later explicit run: native staging or an adapter-owned, bounded, unsent in-memory queue. Adapter-owned staging is lost with its owner, does not start a run, and must never replay a message after an attempted native write. A completed local write alone does not qualify, and the receipt promises neither durability nor future consumption. Evidence of a later run's consumption may prove the tested staging path; it does not turn a future run into a fact at receipt time. `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
+> `injected` remains reserved for an identity-bound native admission acknowledgment. `queued_for_next_turn` acknowledges demonstrated native staging awaiting automatic processing, not a promise of durability or proof of model consumption. It must not mean waiting for another human prompt or explicit Run. Products must preserve the idle-wake and active-to-idle handoff requirement. Legacy adapters that only retain input passively are not conforming. A completed local write alone qualifies only as `written`; `accepted` is reserved for an explicit retention undertaking and is not an alias of `written`.
 >
 > The Claude interactive integration returns `written` at that local completion boundary. It preserves the captured native session ID and frame contents across asynchronous work; a later identity report never retargets the frame. A native-adapter `rejected` result requires an observed native refusal or a failure before any native submission, with a reason that identifies that boundary. An uncertain write or post-submission transport loss must not be represented as a native refusal or proof of non-consumption.
 
@@ -335,21 +340,38 @@ already-written valid open response can commit; EOF first fails the spawn.
 The normalized `policy` contains `persistent`, `auto_close_ms`, `idle_message`,
 `notify`, and, when applicable, `owner_session_id` or `notify_target`.
 Fresh defaults are `persistent:false`, `auto_close_ms:60000`, and
-`idle_message:"stage"`. Zero disables auto-close; positive values are milliseconds
+`idle_message:"run"`. Idle wake is mandatory, not a policy choice. The
+legacy input `idle_message:"stage"` remains readable for compatibility but
+normalizes to `run`, including stored rows and resume. Zero disables auto-close; positive values are milliseconds
 up to 9223372036854. Persistence controls owner-exit cleanup independently of
-terminal auto-close and idle-message behavior. All four persistence/auto-close
+terminal auto-close. All four persistence/auto-close
 combinations are supported. Open performs no input and arms no deadline.
 
 On resume, persistence survives and may be promoted, never demoted. A
 nonpersistent lane acquires the resuming owner. Omitted auto-close resets to
-60000; custom or disabled grace must be supplied again. Omitted idle-message
-policy inherits. Parent-owned lanes notify their current owner by default;
+60000; custom or disabled grace must be supplied again. Idle-message behavior is always wake. The effective policy reports `run`. Parent-owned lanes notify their current owner by default;
 `notify:false` disables that delivery. An explicit `notify_target` may name that
 same owner; a different target is rejected.
 Fresh persistent lanes have no implicit target: `notify_target` enables it,
 `notify:true` requires a target, and `notify:false` clears it. A simultaneous
 false and target is invalid. Persistent resume preserves an omitted target;
 promotion preserves the prior enabled owner destination as its explicit target.
+
+Completion pointers are messages and wake idle recipients. To bound automatic
+notification chains, a run seeded by a completion pointer emits no automatic
+completion pointer of its own. Its output is still retained and collectable,
+including by a third-party owner who consequently receives no automatic notice
+for that run. Explicit sends made by the woken product remain ordinary messages.
+A trace-seeded run keeps the existing completion behavior.
+
+Completion origin is daemon-owned metadata, absent from public message params.
+The authenticated federation envelope carries `completion:true` only for a
+single-target generated pointer. It survives delivery hold/reseed, but is not
+inherited by the product's explicit sends. Updated links negotiate TLS ALPN
+`sessionbus-wake/1`, which also supports trace and roster. Across an older link,
+a marked completion forward returns `forward_lost` without dropping the marker
+or closing healthy federation; ordinary sends continue. Deploy the matching hub
+and host daemons to preserve cross-host completion notifications.
 
 The authenticated spawning caller owns nonpersistent lifetime. Same-ID peer
 supersession atomically transfers that lifetime before retiring the old
@@ -422,9 +444,9 @@ validated by the kit before native dispatch. Only refused provisional IDs may
 be reused. Returned session IDs remain canonical across federation. Resume
 starts a new generation and does not recover answers from the retired worker.
 
-Idle delivery with `idle_message:"stage"` uses ordinary `deliver` and starts no
-run or timer. With `idle_message:"run"`, the daemon reserves the same run slot
-and adds its private `run_id` to the original `message.deliver`. The Worker
+For every idle lane delivery, the daemon reserves the ordinary run slot
+and adds its private `run_id` to the original `message.deliver`. There is no
+passive delivery mode and no additional caller command is required. The Worker
 invokes `RunInput` with exactly one text input or full delivery seed. The seed
 preserves original message ID, source and body; its private transport run ID may
 be removed before the callback. `Run.ReportDelivery` answers that original RPC
@@ -432,7 +454,23 @@ once with the observed native receipt and may block on its transport write.
 Adapters must call it outside native reader locks. Missing or uncertain receipt
 uses Internal/no_receipt, not a guessed refusal. Invalid receipt encoding or
 write failure closes the connection so the original request cannot hang.
-Active delivery keeps the ordinary native injection/staging path and Run token.
+Active delivery keeps the ordinary native admission path and Run token. It must
+be consumed by that turn or automatically continued; no human prompt is needed.
+At the final native handoff, the product synchronizes delivery with native turn
+completion. If the turn ended and nothing was written, steered or queued, it
+returns `ProtocolError(-32004, not_running)`. The kit also returns this error
+without invoking the product when the run is already absent or its context is
+cancelled. The product check is still required: completion may race the kit's
+check. Never return this error after native admission or an uncertain write.
+
+For this pre-submission refusal on an ordinary lane delivery, the daemon retains
+the original routed RPC under its existing 256-call bound. Once `turn.ready` is
+acknowledged, it admits that same message as new work; if ready already arrived,
+it does so immediately. Message ID, source, body and daemon origin markers are
+preserved. The original sender receives the new run's truthful admission receipt,
+not a synthetic queued receipt. Close/disconnect settle held calls explicitly.
+Peers and already-seeded runs never enter this retry path. Internal/no-receipt
+uncertainty is never retried.
 
 #### `turn.status`, `turn.wait`, and `turn.ack`
 
@@ -448,7 +486,9 @@ waits without a local polling limit. Both return `{session_id,run_id,state}`:
 A missing or retired record is `unknown_session` while disconnected lanes use
 `not_connected`. At most 256 active reads are admitted, independently of the
 existing transport correlation bound. Capacity is reserved before new work and
-older output is never silently evicted.
+older output is never silently evicted. A full 256-record cursor rejects new
+message-triggered work with explicit Busy backpressure; owners must collect and
+acknowledge records. Delivery does not silently evict or auto-ack results.
 
 `turn.ack {session_id,run_id}` consumes only the oldest terminal record and
 returns `{}`. A repeat acknowledgment of an issued, already consumed ID in the
@@ -474,8 +514,7 @@ processing, not native receipt or output collection.
 When notification is enabled, the daemon sends an ordinary peer message under
 the actual lane identity to its owner or persistent notify target. The body is
 only a lane/run collection pointer, never the answer or admission receipt.
-The receiving product's normal native delivery policy applies, including its
-own stage/run selection. No-notify omits it. Failed/unavailable delivery consumes
+The receiving product's normal native delivery policy applies, including mandatory idle wake. No-notify omits it. Failed/unavailable delivery consumes
 nothing, extends no deadline and creates no retained notification or retry.
 
 #### `turn.interrupt`
@@ -674,10 +713,10 @@ and closes the connection without writing one.
 | `-32001` | `unknown_session` | `message.send`, resume `lane.spawn`, run start/read/wait/ack, `turn.interrupt`, or `session.close` when the named row or peer does not exist or is invisible to the caller. |
 | `-32002` | `not_connected` | Run start/read/wait/ack or `turn.interrupt` when a durable row has no connection. |
 | `-32003` | `busy` | Run admission when the target already has an outstanding run or 256 retained records; out-of-order ack; a cursor read after close admission; a worker loop dequeuing a 257th unanswered call; a full 256-event connection inbox; or a new run, interrupt, close, resume, or forget for a claimed lane row. A delivery rejected by either bound has reason `busy`; delivery to a claimed but attached lane is still admitted. |
-| `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run. |
+| `-32004` | `not_running` | `turn.interrupt` when the target has no outstanding run; or an ordinary worker delivery refused before any native admission at a finished turn boundary, for daemon hold/reseed. |
 | `-32005` | `already_connected` | Resume `lane.spawn` when the durable row already has its worker connection. |
 | `-32007` | `unknown_product` | `lane.describe` or new `lane.spawn` when the product token is invalid or its binary is absent from the target host's service PATH. |
-| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration, or `idle_message:"run"` is selected without `supports_message_run:true`. |
+| `-32008` | `unsupported_open_field` | New or resumed `lane.spawn` when the supplied or stored `open` object contains a field absent from the new worker's hello declaration, or the worker lacks mandatory `supports_message_run:true`. |
 | `-32009` | `spawn_failed` | `lane.describe` or `lane.spawn` when exec, hello, open, or native creation fails before commit. |
 | `-32010` | `timeout` | `lane.describe` or `lane.spawn` when its one spawn/open transaction bound expires. |
 | `-32011` | `not_committed` | Any worker-originated client-to-daemon session method received after hello but before product-session-ID commit. |
@@ -711,7 +750,7 @@ Only lanes have durable rows. A row has exactly these columns:
 | `groups` | Full resume-membership recipe containing the parent's private group, the recursively composed `<parent private group>/<leaf>`, and explicit `extra_groups`; no other parent membership is inherited. |
 | `open` | The original validated `SessionOpenOptions` value, re-marshalled unchanged on resume with `arguments` order preserved. |
 | `created_at` | Daemon timestamp assigned when the row commits. |
-| `policy` | Normalized independent lifetime, auto-close, idle-message and notification selection. Older rows without it load as persistent, non-notifying lanes with no auto-close, preserving their original lifetime behavior. |
+| `policy` | Normalized independent lifetime, auto-close, idle-message and notification selection. Older rows without it load as persistent, non-notifying lanes with no auto-close, preserving their original lifetime behavior; their delivery behavior upgrades to mandatory wake. |
 
 Each row is one JSON file named `<sha256(session_id)>.json`. A commit writes and
 syncs a temporary file, renames it to that name, and syncs the containing
@@ -1624,7 +1663,7 @@ request IDs correlate worker-originated session methods and inbound results, so
 
 The `Run` token is installed before `run()` starts. Immediately when `run()`
 returns, the kit cancels its per-run context under the slot mutex; from then on
-interrupt returns `not_running` without product code, including during result
+interrupt and ordinary delivery return `not_running` without product code, including during result
 mapping and the ready control call. The run handler validates the result
 and sends metadata without holding the slot mutex across RPC. Its observed
 ready acknowledgment publishes the cursor, clears the slot and closes Done
@@ -1679,7 +1718,7 @@ The peer kit keeps one JSON-round-trip snapshot as the desired identity. After
 each hello response it compares what it sent with that desired value and sends
 the current value immediately until they match; a change crossed with connect
 or another re-hello therefore cannot leave the older value installed. Its
-`rehello(name, info)` call preserves the product, session ID, and groups. While
+`rehello(signal, name, info)` call preserves the product, session ID, and groups. While
 disconnected it stores the new desired name and information and returns
 `not_connected`.
 Its `replace(ctx, identity)` call supplies a complete new identity for a
@@ -1708,7 +1747,7 @@ generated from the schema:
 `SessionSummary`, `HostProducts`, and `ProtocolError`; wrappers and products do
 not hand-maintain protocol-shaped duplicates. The worker entry is
 `serveWorker(callbacks, env)`, which returns the kit-owned `closed` signal. Peer
-mode is `connectPeer(identity, deliver)`, `rehello(name, info)`, and
+mode is `connectPeer(identity, deliver)`, `rehello(signal, name, info)`, and
 `replace(ctx, identity)`. A
 connection-bound client supplies `list`, `send`, `describe`, `spawn`, `resume`,
 `trace`, `run`, `interrupt`, and `close(forget)` and is usable from every callback
@@ -1873,12 +1912,10 @@ plugin needs:
   `session/created` and `session/disposed`, supplies input receipt, turn start,
   assistant text, and terminal reason; no polling is required;
 - `agent.cancel` interrupts, and `agent.whenIdle` supports orderly close;
-- `agent.steer` injects during a run. While idle, the plugin calls
-  `session.append('user/message', message, {surfaceOp: 'append'})`, the confirmed
-  public primitive at `packages/core/session/src/index.ts:668-716`; it writes
-  synchronously to the durable surface, starts no turn, and the next request is
-  built from that surface. The plugin reports `injected`. `agent.inject` is not
-  a substitute because its inbox splice is claimed only by a running turn; and
+- `agent.steer` admits an interactive message during a run or starts work
+  while idle. A durable `session.append` alone is insufficient because it
+  does not wake the agent. The plugin must prove the native admission receipt
+  and preserve delivery across the final-step boundary; and
 - `tools.register` exposes the product's Sessionbus tool while the kit's
   client-to-daemon session-method API carries its calls on the same socket.
 
@@ -1888,11 +1925,11 @@ applies the composed name, and returns its exact ID. Resume resolves
 `extra_arguments:[]`; a nonempty `open.arguments` fails with `spawn_failed`.
 Run submits one user message, converts the observed DSH terminal reason to the
 three wire outcomes, and carries the DSH reason kind as
-`native_stop_reason`. Deliver never starts an unrequested DSH turn and
-the native plugin contains no delivery queue. DSH reports `injected` because it
-has append-without-run; `queued_for_next_turn` remains conforming for any
-product that lacks that primitive. A running delivery is `injected` exactly when
-`agent.steer` resolves; there is no receipt polling. In peer mode, a DSH rename
+`native_stop_reason`. An idle lane delivery is a full delivery seed passed to
+`run`; the plugin advertises `supports_message_run:true`, renders the original
+source and body once, reports native admission through `Run.ReportDelivery`,
+and returns the observed native terminal. Interactive delivery uses the
+native wake-capable path. No idle delivery may remain as passive context. In peer mode, a DSH rename
 sends a same-ID re-hello with the new title and unchanged groups, updating the
 bus name in place. Lane open applies the daemon-composed title and a lane never
 re-hellos. The registered Sessionbus tool exposes the
@@ -1961,10 +1998,10 @@ must remain net-negative after the kit is accounted separately.
 | Tool ingress | In lane mode the resident wrapper owns a private Unix socket under `dirname(SESSIONBUS_SOCKET)/lanes/`, unlinks it on exit, and passes that path as `SESSIONBUS_LANE_SOCKET` to the product-spawned `<product>-peer mcp` helper. The helper sends one `{action, arguments}` value to that endpoint and returns its one result. In peer mode the helper uses the same hop only when the product keeps another session owner resident; otherwise the helper owns the peer connection and caller itself. | Each session has exactly one daemon connection and one caller-kit instance. A per-session Unix path cannot be reused by a stray child as a different session's endpoint, and a short-lived helper never becomes presence or owns caller state. |
 | Shared MCP entry | `wrappers/mcp` is one stdio MCP server for the caller-kit tool surface. Its private backend carries one action request to a resident wrapper; its direct backend uses the caller owned by a product-kept helper. Each product adds only `<product>-peer mcp` dispatch and the backend selected by its observed lifetime. A raw framed method hop remains test-only. | One MCP implementation prevents every wrapper from rebuilding tool JSON, while the backend keeps `start`/`status`/`wait` in the actual resident process. Budget: **200 production / 200 test logical lines**. |
 | Local encryption handoff | **Reserved in 0.5.0, not implemented:** thin peer launchers and lane wrappers must not configure local TLS. Both kits consume and scrub `SESSIONBUS_LOCAL_KEY` and reject a nonempty value before opening the daemon connection; private MCP/plugin endpoints and native children never receive it. | The implemented local boundary is the owner-checked `0700` runtime directory and `0600` Unix socket. Host-to-hub TLS remains implemented and required; private wrapper hops are not daemon connections. |
-| Wrapper-only queue and run handoff | A wrapper that lacks native append/injection owns one in-memory FIFO capped at 64 deliveries and 1 MiB total after rendering and newline separators. The wrapper host's own renderer, fixed by a golden fixture, emits the `[sessionbus-metadata: ...]` carrier line, preserves arrival order, joins rendered entries with newlines, and prepends the result before caller input. FIFO extraction, native-turn creation, and interrupt are serialized under one boundary: interrupt before native creation aborts creation and returns terminal `interrupted` without a native call; after creation it calls native cancel. `injected` is returned only when the product callback confirms an actually active native turn; otherwise the message joins the next input. At run start the host atomically swaps the FIFO; overflow is rejected as `queue_full`. Shared fixtures cover interrupt at creation, delivery racing the first turn, and delivery racing terminal completion. | One renderer and one handoff boundary prevent wrappers from changing sender metadata, losing a boundary delivery, creating an unstoppable turn, or claiming injection into a turn that did not exist. `queued_for_next_turn` remains truthful; loss with wrapper exit is the accepted loss in Section 1.2. |
-| Interactive delivery | A peer integration may let an interactive product start a turn in response to delivery and report `injected`; the wrapper FIFO rule applies only to a lane whose idle-message policy is stage. Explicit idle-message run policy permits one shared Worker seeded run. | Peer interaction is already user-owned product work; lane admission follows the independent shared policy. |
+| Delivery and run handoff | Idle lane delivery enters one shared Worker seeded Run. Active native admission and completion must be synchronized so a delivery cannot remain in a passive FIFO after the turn ends. A product may defer input only when it will process it automatically. Never replay after uncertain native submission. | Message receipt is separate from terminal completion; a sent message must cause work without another prompt. |
+| Interactive delivery | An interactive integration must wake its native agent on idle delivery and admit active delivery through native scheduling. It owns native turn creation; the daemon does not issue a lane Run to a Peer. | Interactive and lane products share the same communication requirement, using their respective native lifecycles. |
 | Caller tool surface | Every product exposes the same caller-kit start/wait/status/interrupt/spawn/describe/trace/close/list/send operations; product plugins do not invent wire methods. | Tool presentation is kit sugar over the eighteen methods and is identical for native and wrapped products. |
-| Shared size cap | Wrapper host, private MCP/plugin endpoint, and bounded FIFO together: **400 production / 400 test logical lines**. | Product-independent scaffolding larger than the daemon router would be a second protocol implementation. |
+| Shared size cap | Wrapper host, private MCP/plugin endpoint, and delivery handoff together: **400 production / 400 test logical lines**. | Product-independent scaffolding larger than the daemon router would be a second protocol implementation. |
 | Shared deletion | Delete the 16 shared files in `internal/launcher`, including `lane_grok_test.go` exactly once (2,199 lines), and `9f366be:cmd/agent-sessions/connector_refresh.go` plus its test (333 lines). Rewrite `connector.go`/test as the resident peer wrapper's connection, and rewrite `native_peer.go` as thin exec-time product configuration; the stdio entry is only the private action helper. | The old launcher package still dies: CLI parsing and thin peer plans move to `cmd`, product and connection ownership to wrappers, and lane recipes to wrappers. Connector self-exec/release refresh is unnecessary when the resident wrapper holds the connection. |
 
 The launcher/daemon environment contract is exact:
@@ -1993,9 +2030,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Readiness and projection | The wrapper hellos immediately after Claude starts because it minted the session ID. Claude's `system/init` is verified when it arrives with the first turn, and its `session_id` must equal the minted one. An exit before the first turn is reported by the ordinary process-exit path. Interactive projection lands with the `claude-peer mcp` entry, not the lane wrapper. | No readiness timer. |
 | Run | Write one stream-json user frame, keep the run callback pending, and convert the exact result frame to the terminal result. | `lane.go:173-225` already proves the single stream write plus terminal observation. |
 | Tools | In lane mode `claude/.mcp.json` starts stateless `claude-peer mcp` calls against the wrapper's private Unix endpoint. In peer mode Claude keeps one stdio helper alive for the session; that helper owns the direct peer connection and its caller. After Claude `/clear`, the helper observes the new product session and performs a different-ID re-hello before serving its actions. | The two resident owners never coexist for one session; `/clear` ends the old transient peer identity instead of creating an `inactive` side state. |
-| Deliver | While a run is active, write the same user frame and report `injected`; while idle, use the bounded wrapper FIFO and report `queued_for_next_turn`. | Active stream injection is proven by `lane.go:224-249`. The c5 idle `SendMessage` also writes a user frame (`lane.go:251-274`) and would start unrequested work, so it cannot be called idle under the universal contract. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt writes the native `control_request` subtype `interrupt`; close ends the stream and reaps the exact child. | `lane.go:277-321` proves both operations and their native acknowledgements. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Wrapper-only state: the bounded delivery FIFO. | Every open value has a native process flag or stream mapping; the delivery compromise remains isolated behind `deliver` and the daemon contains no Claude branch. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Passive lane-delivery FIFOs are not permitted. | Every open value has a native process flag or stream mapping; native handoff remains inside the product and the daemon contains no product branch. |
 | Size cap | **360 production / 400 test logical lines**, including stream framing and Claude argument translation but excluding the shared wrapper host. | The current 578-line actor combines generic lifecycle with product translation; the generic kit removes that duplication. |
 | Deletion inventory | Delete all `internal/products/claude` (3 files / 1,108 lines), `internal/launcher/{claude_peer.go,claude_peer_test.go}` (2 / 183), `internal/bridge/claude_title*.go` (2 / 99), and the orphan `internal/bridge/claude_sdk_socket_*.go` family (4 / 178). Rewrite `claude/.mcp.json`; retain product docs/skills. Total: **11 files / 1,568 lines**. | The wrapper owns title and stream/socket integration directly; the daemon driver, bridge title observer, orphan SDK socket split, and old launcher disappear. No compatibility adapter remains. |
 
@@ -2007,9 +2044,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | Fresh performs `thread/start`, returns the product thread ID, applies the composed name through `thread/name/set`, and materializes its rollout; resume uses `resume_session_id` and reapplies the stored open object. It supports all five open fields. Permission mapping is exact: default means approval `never` with the configured sandbox, while bypass means approval `never` plus `danger-full-access`. | `CodexStartRequest` and `CodexLaneTurnRequest` at `codex_native.go:51-70` expose cwd, model, reasoning effort, permissions, and arguments. The wrapper preserves the product-owned thread ID and name instead of inventing daemon aliases. |
 | Run | Send one `turn/start`, await the matching `turn/completed`, and extract the final agent message. | `internal/products/codex/lane.go:75-122` and `codex_native.go:528-656` prove the end-to-end primitive. |
 | Tools | In lane mode the wrapper supplies a private `codex-peer mcp` Unix endpoint in App Server `thread/start` `mcp_servers`; calls are stateless action hops. In peer mode the App Server daemon starts one helper per thread with no launcher environment; that helper owns the thread's peer connection and caller and defers hello until the first thread identity exists. After Codex `/clear`, the new thread gets its own helper and peer identity. | MCP configuration and peer ownership are per thread; the App Server's observed helper lifetime removes the old transient identity without `inactive` or a launcher-owned endpoint. |
-| Deliver | Active thread uses `turn/steer` and reports `injected`; idle delivery enters the bounded wrapper FIFO instead of invoking c5's `turn/start`. | `codex_native.go:479-527` explicitly distinguishes active steer from idle start; universal delivery forbids the latter. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt calls `turn/interrupt` for the exact active turn. Close archives the thread and unsubscribes before the wrapper exits. | `internal/products/codex/lane.go:124-158` and `codex_native.go:758-780` are the existing native boundaries. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Wrapper-only state: the bounded delivery FIFO. | App Server exposes every typed open value; idle delivery is the only missing primitive and stays wrapper-local. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Passive lane-delivery FIFOs are not permitted. | App Server exposes every typed open value; idle lane delivery uses the ordinary native turn start through the shared Worker. |
 | Size cap | **700 production / 700 test logical lines**, including App Server framing and session code but excluding the shared wrapper host. | Native protocol code must be counted with the product that requires it; host-global coordination is forbidden. |
 | Deletion inventory | Delete all `internal/products/codex` (2 files / 331 lines) and `internal/launcher/{codex_peer.go,codex_peer_test.go}` (2 / 786). Total: **4 files / 1,117 lines**. | The App Server lane primitive is rehomed into wrapper-owned code; the daemon driver dies and the peer exec plan moves into thin `cmd` composition. |
 
@@ -2021,9 +2058,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | The resident wrapper receives `session.open` before it starts the private leader. For a fresh lane it holds `locks/grok/<launch-token-digest>`, uses the same digest for the private lane-socket path, starts Grok without `--session-id`, and calls ACP `session/new`; Grok's returned ID becomes the session ID, then the wrapper renames the lock to `locks/grok/<session_id>` without replacing an existing lock and applies the composed title through the observer rename primitive. Resume locks `locks/grok/<resume_session_id>` directly, starts no argv resume selector, and calls `session/load` for that ID. It puts `--permission-mode`, `--reasoning-effort`, `-m`, and ordered `arguments` on the process command line, with `cwd` as the child working directory. | Grok Build 1.0.13 ignores a fresh `--session-id` in this ACP entry; `session/new` returns the product-owned ID and `session/load` is the sole resume selector. ACP `_meta` exposes only `yoloMode` / `autoMode`; it is not an open-field transport. All five fields and the title are applied at open. The existing 15-second startup hold remains inside `spawnTransactionTimeout = 60s`. |
 | Run | Call ACP `session/prompt`, consume only update notifications carrying that prompt's ID, and return its stop reason and accumulated output. Notifications from any other product turn are ignored. | One Sessionbus run owns one native prompt; an unrelated product turn cannot become its result. `grok_native_session.go:270-308` is the resident prompt primitive. |
 | Tools | In lane mode the wrapper publishes `lanes/<launch-token-digest>.sock`, and each stdio helper is a stateless action hop to the lane-owned caller. In peer mode the product-spawned resident helper serves MCP in-process over its own peer-owned caller; it has no private endpoint and no launcher-side caller. | ACP is the wrapper-to-Grok control protocol; MCP is the product-facing Sessionbus tool boundary. Caller state lives in the resident owner in both modes, never in a transient action hop. |
-| Deliver | In lane mode, while a wrapper-owned prompt is active, observer interjection reports `injected` only after the actor acknowledges it; while idle, delivery enters the shared bounded wrapper FIFO, reports `queued_for_next_turn`, and is prepended to the next `session/prompt`. In peer mode the resident helper lazily opens and keeps one observer on first delivery, validates its immutable session against the exact live roster row, updates the peer title by same-ID re-hello, and reports `injected` after the actor acknowledges the native interject in any supported live state. | Grok's idle interject starts its own `interject-fallback` turn, so it cannot implement lane-idle delivery: a lane never starts an unrequested turn. Peer mode owns no Sessionbus run; the product has accepted an acknowledged interject and decides when it runs. The helper can start before the native summary exists; that short product window is recorded, not mechanised with polling or a startup marker. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt sends one ACP `session/cancel` notification; `{}` means the notification was sent, not that the run has stopped. The worker kit's universal close path interrupts an active lane run and waits for its terminal before invoking Grok's `close`, which releases the primary, observer, leader, private socket, and lock. In peer mode helper EOF releases its observer and peer, while launcher shutdown joins the TUI, quiet hold, and leader. | Grok adds no close timer: the daemon's single 10-second `closeBound` closes the worker and kills its process group if lane cleanup stalls. Grok's close callback never receives an active run; peer processes follow the product-owned stdio and launcher lifetimes. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Wrapper-only state: the shared bounded idle-delivery FIFO. | Grok exposes active interjection and all typed open controls; only idle delivery lacks a native append primitive and stays wrapper-local. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Passive lane-delivery FIFOs are not permitted. | Grok exposes active interjection and all typed open controls; idle delivery starts a native turn through the shared Worker. |
 | Size cap | **975 production / 930 test logical lines**, including ACP framing, both launcher modes, helper-owned peer mode, and leader bootstrap but excluding the shared wrapper host. | The measured implementation is 968 / 930. The peer launcher owns only leader, quiet hold, TUI, and argument translation; the product-spawned helper owns peer, caller, in-process tools, and its lazy observer. |
 | Deletion inventory | Delete all `internal/products/grok` (2 files / 637 lines), `internal/launcher/{grok_peer.go,grok_peer_test.go}` (2 / 1,183), `9f366be:cmd/agent-sessions/grok_peer.go` (1 / 213), and all 11 `internal/bridge/grok*.go` files (1,883). `internal/launcher/lane_grok_test.go` is counted once in the shared row. Rewrite `grok/.mcp.json` and `grok/scripts/native-entry` as dual-entry peer/direct or lane/local assets. Delete the disproven launcher-owned peer, caller, private peer endpoint, roster observer, artifact watcher, and `/new` Replace path. Total legacy deletion: **16 files / 3,916 lines**. | The wrapper receives copied, product-owned ACP/leader/observer slices rather than retaining a cross-product bridge package. The interactive launcher wraps the TUI only to own its private leader and quiet hold; product-spawned helpers own immutable per-session presence. |
 
@@ -2035,9 +2072,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | Initialize ACP v1, mint a v4 ID for fresh open and pass it in `_meta["qwen-code/sessionId"]` to `session/new`, or use capability-checked `session/resume` with `resume_session_id`; verify and return the exact product ID, then rename fresh sessions to the composed title. Supported open fields are `cwd`, `permission_mode`, `model`, and `arguments`; model maps to `-m`. Default permission uses Qwen's ordinary mode; bypass adds `--yolo` and verifies the returned mode. Arguments may not claim `--acp`, approval/yolo, resume/continue/session-id, prompt/input/output, or name controls. | Qwen Code 0.23.0 accepts the session ID metadata, resume, and `-m`; it exposes no reasoning-effort flag or ACP field. The wrapper mints only because Qwen requires the caller-provided UUID and fails closed on reserved controls. |
 | Run | Start `session/prompt`, accumulate session updates, and resolve the matching future to a terminal result. | `lane.go:199-263` and `client.go` prove the one ACP request/future. |
 | Tools | In both modes ACP `mcpServers` starts stateless `qwen-peer mcp` calls against the resident wrapper's private Unix endpoint; the wrapper owns the caller and its peer or worker connection. | c5 already injects an MCP server during `session/new` (`lane.go:134`); the product-spawned helper remains the tool entry but owns no connection or caller state. |
-| Deliver | Idle delivery enters the shared bounded FIFO and is prepended to the next run. During a run, `craft/drainMidTurnQueue` hands queued entries to Qwen and an acknowledged drain reports `injected`. At terminal, every undrained entry—including aborts and runs with no tool round—moves back to the shared FIFO for the next run. | Qwen Code 0.23.0 owns this native mid-turn drain: each call is bounded at 2 seconds, three strikes disable it, `-32601` disables it immediately, and a 30-second late-drain recovery preserves entries. No delivery is dropped between the native queue and wrapper FIFO. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt calls `craft/cancelPendingPrompt`; close cancels the ACP lifetime and reaps the child. | `lane.go:265-310` proves both calls. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open field: `reasoning_effort`. Wrapper-only state: the bounded idle and recovery FIFO; native mid-turn drain state remains Qwen-owned. | Product help exposes model but no effort selector; permission vocabulary and reserved arguments stay wrapper data, and no Qwen condition enters the daemon. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open field: `reasoning_effort`. Native mid-turn drain state remains product-owned; no passive lane FIFO may replace automatic processing. | Product help exposes model but no effort selector; permission vocabulary and reserved arguments stay wrapper data, and no Qwen condition enters the daemon. |
 | Size cap | **520 production / 600 test logical lines**, including ACP framing but excluding the shared wrapper host. | The current driver/client split contains generic actor state that disappears; all retained Qwen protocol code remains charged here. |
 | Deletion inventory | Delete all `internal/products/qwen` (4 files / 1,031 lines), `internal/launcher/{qwen_peer.go,qwen_peer_test.go,qwen_test_helpers_test.go}` (3 / 1,412), `9f366be:cmd/agent-sessions/qwen_peer.go` and `9f366be:cmd/agent-sessions/qwen_peer_test.go` (2 / 234), and the obsolete 11-line `qwen/scripts/native-entry`; replace it with the installed dual-entry MCP image and rewrite `qwen/mcp.json`. Total: **10 files / 2,688 lines**. | ACP becomes lane-wrapper-owned; event-file identity and old peer launcher state die, while a thin peer exec plan and product-spawned MCP entry replace them. |
 
@@ -2049,7 +2086,7 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | After a v2 SDK capability probe and app-ready, create or fetch the exact product session, return its ID, apply the composed title and permission rules, and retain model/agent/variant defaults. Both products support all five open fields; ordered arguments allow only the documented `--agent` selector. | `opencodefamily/lane.go:69-187` proves the product primitives. The deployed pdev plugin/SDK is 1.2.10 while the CLI is 1.18.28, so the v2 probe must succeed before hello rather than trusting the CLI version. |
 | Run | Call `session.promptAsync`, follow the exact event stream, then fetch the matching assistant result. | `lane.go:168-337` and `client.go` contain the existing bounded HTTP/SSE primitive. |
 | Tools | The plugin's peer and worker modes use the same JS caller/worker kit and register the same product tool; there is no lane-local bridge endpoint. | The current plugins already own SDK tool registration in `9f366be:integrations/opencode/agent-sessions.mjs` and `9f366be:integrations/kilo/agent-sessions.mjs`; the token changes hello mode, not transport shape. |
-| Deliver | Without a session-level append or active injection primitive, the plugin reports `queued_for_next_turn` using product-native pending input if available; otherwise this is the named upstream blocker and the worker cell cannot pass. | Starting `promptAsync` would create unrequested work, while the old Go driver's unsupported steer is not a native contract. The conformance probe, not adapter history, decides readiness. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt calls the SDK abort endpoint and cancels event wait; close disposes the exact product session and lets the kit close the socket. | The plugin owns both session and connection, so no private server supervisor state enters the bus. |
 | Exception ledger | Section 1 code exceptions: **0** for both products. Declared unsupported open fields: **none**. Product lifecycle exceptions: **0** once the v2 SDK and delivery probes pass. | Dialect differences remain product SDK data; they never select a wire method or daemon branch. |
 | Size cap | Shared native plugin **750 production / 700 test**, plus **60 / 80** per boot-shim/dialect leaf, excluding the shared JS kit. | OpenCode and Kilo differ only in SDK dialect, permission mapping, and packaged entrypoint; product transport remains charged to this family. |
@@ -2063,9 +2100,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | Fresh mints a Pi-compatible ID, passes `--session-id <id>` and the composed product title, then returns the product state ID; resume passes `--session <resume_session_id>` and verifies the returned state. Pi supports all five open fields: model maps to `--model` and reasoning effort to independent `--thinking` before child spawn. | `pifamily/lane.go:76-173` and `quirks.go:113-134` prove the transaction; Pi product help exposes the exact session, model, and thinking flags. |
 | Run | Send RPC `prompt`, observe terminal JSONL events, and read the final assistant text. | `pifamily/lane.go:179-300` and `rpc.go` are the existing primitive. |
 | Tools | The retained Pi extension runs in peer mode with a direct JS-kit daemon connection, or in lane-local mode against the wrapper's private endpoint; both register the same caller tool. | `integrations/pi/pifamily.mjs:106-151` already owns product tool registration; only the selected connection mode changes. |
-| Deliver | Running uses RPC `steer` and reports `injected`; idle uses the bounded wrapper FIFO. | `pifamily/lane.go:301-329` proves active steer. The current extension's idle `sendUserMessage` (`pifamily.mjs:157-174`) starts product work and therefore cannot implement idle injection. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | Interrupt sends RPC `abort`; close reaps the exact RPC process while leaving its transcript durable. | `pifamily/lane.go:331-379` proves both operations. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Wrapper-only state: the bounded idle-delivery FIFO. | Model and thinking are process flags applied after open; only idle append is missing and it stays wrapper-local. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Passive lane-delivery FIFOs are not permitted. | Model and thinking are process flags applied after open; idle delivery starts work through the shared Worker. |
 | Size cap | Shared Pi-family wrapper **650 production / 700 test**, plus Pi leaf **60 / 80**; includes JSONL framing and excludes only shared wrapper-host code. | Product quirks are fixed launch/terminal data, not lifecycle branches; native framing is not an uncounted utility. |
 | Deletion inventory | Delete all `internal/products/pifamily` (8 files / 2,242 lines) and `internal/products/pi` (3 / 110): **11 files / 2,352 lines**. Rewrite `integrations/pi/pifamily.mjs` and its test as a local wrapper plugin; retain the package entrypoint/manifest. | The common driver and doctor disappear; the family wrapper owns the same native RPC with no daemon-facing interface. |
 
@@ -2077,9 +2114,9 @@ is present, the kit scrubs and rejects it instead of passing it onward.
 | Open and resume | Create or resume the exact OMP session, call `set_session_name` at fresh open so the product title equals the composed bus name, and apply mapped permissions. OMP supports all five typed open fields: cwd maps to `--cwd=`, model to `--model=`, and reasoning effort to `--thinking`. Its three documented extra arguments are `--tools`, `--exclude-tools`, and `--approval-mode`; conflicts with typed permission fail before spawn. | OMP product help exposes the typed flags, while its ready/RPC surface proves the title call. The default permission path fails closed when RPC approval mediation is unavailable; bypass maps explicitly to the product's noninteractive mode. |
 | Run | Send RPC `prompt`, accept OMP's declared terminal event, and read final assistant text through the family implementation. | `pifamily/rpc.go` contains the closed event decoder; OMP selects the terminal quirk rather than a second lifecycle. |
 | Tools | The retained OMP entrypoint loads the Pi-family plugin in peer/direct or lane/local mode and registers the same caller tool. | `9f366be:integrations/omp/agent-sessions.mjs` is already a three-line family entrypoint; the shared plugin owns mode selection. |
-| Deliver | Running uses RPC `steer` and reports `injected`; lane-idle delivery uses the bounded wrapper FIFO. In peer mode, the product's native `nextTurn` queue retains the message and may report `queued_for_next_turn`. | OMP's native steer does its own framing (`pifamily/lane.go:301-326`); the interactive plugin's next-turn queue is product state, not wrapper or daemon state. |
+| Deliver | Idle delivery starts native work. Lane mode receives a full delivery seed through the shared Worker Run; interactive mode uses the product-owned native wake path. Active delivery must be consumed or automatically continued across completion. Report only the demonstrated admission boundary. | The message itself requests work. Product-native transport and admission details are recorded in the sessionbus-peers product ledger; passive FIFO storage until a later explicit prompt is not conforming. |
 | Interrupt and close | RPC `abort` and exact process cleanup are identical to Pi. | No OMP-specific lifecycle callback is justified. |
-| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Wrapper-only state: the bounded idle-delivery FIFO. | OMP exposes every open value as a process flag; its dialect remains launch/result data only and never reaches the daemon or wire. |
+| Exception ledger | Section 1 code exceptions: **0**. Declared unsupported open fields: **none**. Passive lane-delivery FIFOs are not permitted. | OMP exposes every open value as a process flag; its dialect remains launch/result data only and never reaches the daemon or wire. |
 | Size cap | OMP leaf **60 production / 100 test** in addition to the shared Pi-family cap. | The leaf may declare quirks and permissions only. |
 | Deletion inventory | Delete all `internal/products/omp` (3 files / 135 lines); shared `pifamily` deletion is counted under Pi. Rewrite the retained OMP entrypoint/test/manifest around the local wrapper plugin. Total: **3 files / 135 lines**. | OMP becomes one immutable family-wrapper registration, not a driver package. |
 
@@ -2120,7 +2157,7 @@ against installed products is permitted only on `umka-dev1`.
 
 | Reference | Closed behavior |
 | --- | --- |
-| Reference worker | PATH-resolved `example-peer` starts with the one-use launch token in its environment and empty argv. Its hello declares all five open fields. Ordered `open.arguments` entries are `key=value`; `session_id=<id>` selects the returned product session ID and its absence makes the worker mint one. A plain turn input is echoed; `block` waits only for the run cancellation and returns `interrupted`; `call <method> <params-json>` performs that worker-originated session method and returns the response JSON; `fail <code>` returns that error. An idle delivery is `queued_for_next_turn` and prepended to the next input; a delivery during a run is `injected` and appended to the echoed result. The close callback returns immediately. The worker has no configuration, clock, or product import. |
+| Reference worker | PATH-resolved `example-peer` starts with the one-use launch token in its environment and empty argv. Its hello declares all five open fields. Ordered `open.arguments` entries are `key=value`; `session_id=<id>` selects the returned product session ID and its absence makes the worker mint one. A plain turn input is echoed; `block` waits only for the run cancellation and returns `interrupted`; `call <method> <params-json>` performs that worker-originated session method and returns the response JSON; `fail <code>` returns that error. An idle delivery seeds a Run and is echoed without any further prompt; a delivery during a run is `injected` and appended to the echoed result. The close callback returns immediately. The worker has no configuration, clock, or product import. |
 | Reference caller | `bus/cmd/sessionbus-call [-name <name>] [-g a,b] [-socket <path>] <method> [<params-json>]` opens one peer connection, sends exactly one raw client-to-daemon request, prints its result or error object on stdout, and exits 0 for a result, 1 for an error, or 2 for usage. `turn.run` waits for its terminal; deliveries during the call are JSON lines on stderr and receive `injected`. Separate invocations supply a second peer or abandon a reply sink. The binary has no configuration file, stdin protocol, product condition, or local turn registry. |
 | Worker invocation | The worker suite accepts only a product token and invokes that exact PATH binary with empty argv and a launch token in its environment; every vendor and `example-peer` run the identical trace. |
 | Caller invocation | The caller suite invokes the product's installed Sessionbus tool, not a private test API; every product runs the identical trace against the reference worker. |
@@ -2148,7 +2185,7 @@ not a reason to move lines into a product integration.
 | C4 | Wait returns validated native terminal or explicit unavailable. Oldest-first ack commits consumption; pre-cancelled ack writes nothing and submitted ack settles. Worker retirement invalidates the cursor; no daemon body store or restart recovery. |
 | C5 | Send resolves ID/name/group, deduplicates, and returns dispositions `written`, `injected`, `queued_for_next_turn`, or `rejected`, including exact rejected reasons `ambiguous` and `no_receipt`; an invisible peer receives `unknown_session`. |
 | C6 | Concurrent interrupts coalesce to one worker interrupt and idle interrupt maps `not_running`. |
-| C7 | Owner cleanup and terminal auto-close are independent and use ordinary Close. Open/staged delivery arm no deadline; admission cancels grace and proven refusal restores it. One 10-second close bound includes deferred execute acknowledgment, admitted-reader drain and reap; expiry invents no native terminal. Row remains resumable unless forget. |
+| C7 | Owner cleanup and terminal auto-close are independent and use ordinary Close. Open arms no deadline; admission cancels grace and proven refusal restores it. One 10-second close bound includes deferred execute acknowledgment, admitted-reader drain and reap; expiry invents no native terminal. Row remains resumable unless forget. |
 | C8 | Peer EOF reconnects; a new connection with the same canonical ID supersedes the displaced identity terminally. Same-ID re-hello refreshes name/info with fixed groups. Different-ID re-hello atomically detaches the old reply sinks, fails its pending deliveries once, removes its private group, and installs the new identity/group before acknowledgement; requests admitted before the switch retain the old source. |
 | C9 | The caller drives the remote row by canonical ID; offline resume replays the stored open value unchanged with argument order preserved; `name_taken`, `already_connected`, `not_connected`, forgotten-row `unknown_session`, disconnected-host `unknown_host`, and ambiguous one-hop loss `forward_lost` match Section 1.4; cleanup leaves no connection, process, token, or pending call. |
 
@@ -2241,7 +2278,7 @@ check.
 | --- | --- |
 | Daemon lane actors, registries, projections, collectors, archives, timers, product dispatch, and argv reparse | Router/table tests drive the eighteen methods over a real connection and assert rows, current admissions, pending calls, lifetime ownership, independent deadlines, and supervisor cleanup. |
 | Presence, messaging, federation, roster, names, and notices | Daemon visibility/resolution tests plus the federation gate; no test constructs a private actor or product driver. |
-| Product lane drivers and peer launchers | Each Section 4 wrapper test drives its six callbacks and exact native transcript; the shared wrapper-host unit suite proves the FIFO cap of 64 deliveries / 1 MiB rendered bytes, overflow `queue_full`, stale lock files do not block, a live inherited flock survives wrapper death until the child exits, interrupt at native-turn creation, first-turn/terminal delivery handoff races, and child death with a non-empty FIFO invents no receipt while leaving the row resumable; peer exec-plan tests stop at product config and never claim socket ownership. |
+| Product lane drivers and peer launchers | Each Section 4 wrapper test drives its six callbacks and exact native transcript; the shared wrapper-host unit suite proves bounded active delivery and automatic turn-boundary handoff, stale lock files do not block, a live inherited flock survives wrapper death until the child exits, interrupt at native-turn creation, first-turn/terminal delivery handoff races, and child death with unresolved native delivery invents no receipt while leaving the row resumable; peer exec-plan tests stop at product config and never claim socket ownership. |
 | Go/JavaScript lifecycle duplication | The one 19-row fixture table runs unchanged through both native kits and the reference worker. |
 | Connector and plugin tool tests | Caller-kit conformance C1-C9 through the installed peer MCP/plugin entry, with product-private transport tested only at its local boundary. |
 | Packaging and release projections | Package tests assert one schema/kit projection, correct peer and lane entry forms, no deleted compatibility artifact, and byte-identical installed assets. |

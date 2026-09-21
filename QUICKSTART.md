@@ -72,8 +72,9 @@ returned ID. For example, the public tool arguments are:
 Replace the placeholder; do not invent an ID. The right session can use the
 message's actual source identity to reply through the same tool. A successful
 exchange includes the reply, not merely a positive delivery receipt. Depending
-on the native product and its current state, delivery may be admitted during
-work or staged for a later turn. A receipt never proves model consumption.
+on the native product and its current state, delivery is admitted into active
+work or starts work when idle. Native queuing must process automatically without
+another human prompt. A receipt never proves model consumption.
 
 If no reply appears, inspect the receipt and the receiving terminal before
 doing anything else. Do not automatically resend an uncertain delivery.

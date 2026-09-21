@@ -309,6 +309,10 @@ func (l *hostLink) run(accepted bool) {
 				pending[nextID] = pendingCall{method: event.Method, reply: event.Reply}
 			case outgoingForward:
 				request := event.value.Request
+				if request.Completion && !SupportsWake(l.fd) {
+					event.reply <- errorReply(protocol.ForwardLost, nil)
+					continue
+				}
 				if requestRequiresTrace(request) && !SupportsTrace(l.fd) {
 					event.reply <- traceUnsupported()
 					continue
@@ -486,6 +490,10 @@ func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, orig
 	if s.links[origin.host] != origin {
 		return
 	}
+	if call.value.Request.Completion && !SupportsWake(origin.fd) {
+		s.reply(originReply{origin: origin, id: call.id, value: errorReply(protocol.ForwardLost, nil)})
+		return
+	}
 	if requestRequiresTrace(call.value.Request) && !SupportsTrace(origin.fd) {
 		s.reply(originReply{origin: origin, id: call.id, value: traceUnsupported()})
 		return
@@ -496,6 +504,10 @@ func (s *hubState) forward(ctx context.Context, inbox chan<- registryEvent, orig
 	destination := s.links[call.host]
 	if destination == nil {
 		s.reply(originReply{origin: origin, id: call.id, value: errorReply(protocol.UnknownHost, nil)})
+		return
+	}
+	if call.value.Request.Completion && !SupportsWake(destination.fd) {
+		s.reply(originReply{origin: origin, id: call.id, value: errorReply(protocol.ForwardLost, nil)})
 		return
 	}
 	if requestRequiresTrace(call.value.Request) && !SupportsTrace(destination.fd) {

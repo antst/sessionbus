@@ -29,6 +29,7 @@ type answer struct {
 
 type routedRequest struct {
 	traceCopy     bool
+	completion    bool
 	traceLifetime string
 	runID         string
 	collect       bool
@@ -53,6 +54,8 @@ type session struct {
 	traceTargets               []federation.TraceRecipient
 	traceTargetsBytes          int
 	runFromTrace               bool
+	runFromCompletion          bool
+	completion                 bool
 	commsRequests              map[int64]commsRequest
 	runID, runGeneration       string
 	runSequence                uint64
@@ -60,32 +63,33 @@ type session struct {
 	autoClose                  <-chan time.Time
 	stopAuto                   func()
 
-	daemon        *Daemon
-	wire          *conn.Conn
-	inbox         chan any
-	identity      *entry
-	lastIn        int64
-	nextOut       int64
-	pending       map[int64]routedRequest
-	requests      map[int64]*requestState
-	owned         int
-	stopping      bool
-	closed        bool
-	child         *structuredprocess.Process
-	launch        *launch
-	committed     bool
-	openID        int64
-	closeCall     *routedRequest
-	closeAnswer   answer
-	closeTimer    *time.Timer
-	forget        bool
-	launchResult  *answer
-	processExited bool
-	stopSignal    syscall.Signal
-	forwarded     chan federation.Reply
-	caller        *federation.Caller
-	omit          *entry
-	messageID     string
+	daemon             *Daemon
+	wire               *conn.Conn
+	inbox              chan any
+	identity           *entry
+	lastIn             int64
+	nextOut            int64
+	pending            map[int64]routedRequest
+	deferredDeliveries []routedRequest
+	requests           map[int64]*requestState
+	owned              int
+	stopping           bool
+	closed             bool
+	child              *structuredprocess.Process
+	launch             *launch
+	committed          bool
+	openID             int64
+	closeCall          *routedRequest
+	closeAnswer        answer
+	closeTimer         *time.Timer
+	forget             bool
+	launchResult       *answer
+	processExited      bool
+	stopSignal         syscall.Signal
+	forwarded          chan federation.Reply
+	caller             *federation.Caller
+	omit               *entry
+	messageID          string
 }
 
 func newSession(daemon *Daemon) *session {
@@ -260,7 +264,7 @@ func (s *session) issue(request routedRequest) {
 		request.reply <- answer{code: protocol.Busy}
 		return
 	}
-	if len(s.pending) >= maxPendingCalls {
+	if len(s.pending)+len(s.deferredDeliveries) >= maxPendingCalls {
 		request.reply <- answer{code: protocol.Busy}
 		return
 	}
@@ -280,7 +284,7 @@ func (s *session) issue(request routedRequest) {
 		input := request.params.(*protocol.TurnRunRequest)
 		request.runID = s.reserveRun()
 		request.params = &protocol.ExecuteRequest{SessionID: s.identity.row.SessionID, RunID: request.runID, Input: input.Input}
-	} else if method == "message.deliver" && !s.identity.peer && s.identity.row.Policy.IdleMessage == "run" && s.runID == "" {
+	} else if method == "message.deliver" && !s.identity.peer && s.runID == "" {
 		if s.closeCall != nil {
 			request.reply <- answer{code: protocol.Busy}
 			return
@@ -289,6 +293,7 @@ func (s *session) issue(request routedRequest) {
 		request.runID = s.reserveRun()
 		input.RunID = request.runID
 		s.runFromTrace = request.traceCopy
+		s.runFromCompletion = request.completion
 		request.params = input
 	}
 	// The worker sees its canonical opened identity even when the public caller
@@ -344,6 +349,18 @@ func (s *session) receiveResponse(frame protocol.Frame) {
 		return
 	}
 	if frame.Error != nil {
+		// NotRunning on an ordinary worker delivery is a strict pre-submission
+		// refusal: its native turn ended before the product could admit input.
+		// Keep the original RPC pending until ready, then admit it as fresh work.
+		// Never take this path for a seeded run or an uncertain native write.
+		if frame.Error.Code == protocol.NotRunning && request.method == "message.deliver" && request.runID == "" && !s.identity.peer && s.closeCall == nil {
+			if s.runID == "" {
+				s.issue(request)
+			} else {
+				s.deferredDeliveries = append(s.deferredDeliveries, request)
+			}
+			return
+		}
 		if request.runID != "" && (request.method == "turn.execute" || frame.Error.Code != protocol.Internal) {
 			s.refuseRun(request.runID)
 		}
@@ -398,6 +415,7 @@ func (s *session) connectionClosed() {
 }
 
 func (s *session) settlePending(code int) {
+	s.settleDeferredDeliveries(code)
 	for id, request := range s.pending {
 		delete(s.pending, id)
 		if request.method == "turn.run" {
@@ -408,6 +426,13 @@ func (s *session) settlePending(code int) {
 		}
 		request.reply <- answer{code: code}
 	}
+}
+
+func (s *session) settleDeferredDeliveries(code int) {
+	for _, request := range s.deferredDeliveries {
+		request.reply <- answer{code: code}
+	}
+	s.deferredDeliveries = nil
 }
 
 func (s *session) drain() bool {

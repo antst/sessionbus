@@ -307,7 +307,7 @@ func TestPolicyBlockingRunReadPrecedesDeferredClose(t *testing.T) {
 func TestPolicyRealWorkerWakePointerAndGroupCollection(t *testing.T) {
 	products := t.TempDir()
 	installFixture(t, products, "wake-worker")
-	installFixture(t, products, "fixture-worker")
+	installFixture(t, products, "fixture-worker-no-wake")
 	t.Setenv("PATH", products+string(os.PathListSeparator)+os.Getenv("PATH"))
 	_, socket := startDaemon(t)
 	owner := connectPeer(t, socket, "owner", "owner", "team")
@@ -315,7 +315,7 @@ func TestPolicyRealWorkerWakePointerAndGroupCollection(t *testing.T) {
 	hidden := connectPeer(t, socket, "hidden", "hidden", "other")
 	zero := int64(0)
 	var lane protocol.LaneSpawnResult
-	unsupported := protocol.LaneSpawnRequest{Name: "unsupported", Product: "fixture-worker", Open: &protocol.OpenOptions{}, IdleMessage: "run", AutoCloseMS: &zero}
+	unsupported := protocol.LaneSpawnRequest{Name: "unsupported", Product: "fixture-worker-no-wake", Open: &protocol.OpenOptions{}, AutoCloseMS: &zero}
 	if code := rpcCode(owner.call("lane.spawn", unsupported, &lane)); code != protocol.UnsupportedOpen {
 		t.Fatalf("unsupported wake code %d", code)
 	}

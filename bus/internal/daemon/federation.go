@@ -348,7 +348,7 @@ func (s *session) collectTraceLeg() bool {
 func (s *session) newMessageLeg(caller federation.Caller, messageID, host string, input *protocol.MessageSendRequest, labels []string) messageLeg {
 	leg := messageLeg{labels: labels}
 	if host == s.daemon.host {
-		leg.wait = s.daemon.directory.forwardLocalTrace(caller, s.identity, "message.send", input, messageID, s.collectTraceLeg(), s.traceCopy)
+		leg.wait = s.daemon.directory.forwardLocalTrace(caller, s.identity, "message.send", input, messageID, s.collectTraceLeg(), s.traceCopy, s.completion)
 	} else if host == "local" {
 		leg.code = protocol.UnknownHost
 	} else {
@@ -358,7 +358,7 @@ func (s *session) newMessageLeg(caller federation.Caller, messageID, host string
 		params, _ := protocol.EncodeParams("message.send", input)
 		reply := make(chan federation.Reply, 1)
 		leg.reply, leg.code = reply, s.daemon.directory.postFederation(federation.OutgoingCall{Value: federation.Forward{From: caller,
-			Request: federation.PublicRequest{Method: "message.send", Params: params, MessageID: messageID, Trace: s.collectTraceLeg(), TraceCopy: s.traceCopy}}, Reply: reply})
+			Request: federation.PublicRequest{Method: "message.send", Params: params, MessageID: messageID, Trace: s.collectTraceLeg(), TraceCopy: s.traceCopy, Completion: s.completion}}, Reply: reply})
 	}
 	return leg
 }
@@ -386,7 +386,7 @@ func (s *session) sendFederated(frame protocol.Frame, input *protocol.MessageSen
 		}
 		localInput := *input
 		localInput.Host = s.daemon.host
-		local := s.daemon.directory.forwardLocalTrace(caller, s.identity, frame.Method, &localInput, messageID, s.collectTraceLeg(), s.traceCopy)
+		local := s.daemon.directory.forwardLocalTrace(caller, s.identity, frame.Method, &localInput, messageID, s.collectTraceLeg(), s.traceCopy, s.completion)
 		s.startWork(frame, func(done <-chan struct{}) answer {
 			return s.collectGroupSend(caller, input, messageID, local, hosts, done)
 		})
@@ -512,14 +512,14 @@ func (d *directory) admitFederation(call federation.IncomingCall) (federation.Wa
 	if err != nil {
 		return nil, err
 	}
-	return d.forwardLocalTrace(call.From, nil, call.Request.Method, params, call.Request.MessageID, call.Request.Trace, call.Request.TraceCopy), nil
+	return d.forwardLocalTrace(call.From, nil, call.Request.Method, params, call.Request.MessageID, call.Request.Trace, call.Request.TraceCopy, call.Request.Completion), nil
 }
 
 func (d *directory) forwardLocal(from federation.Caller, omit *entry, method string, params any, messageID string) federation.Wait {
-	return d.forwardLocalTrace(from, omit, method, params, messageID, true, nil)
+	return d.forwardLocalTrace(from, omit, method, params, messageID, true, nil, false)
 }
 
-func (d *directory) forwardLocalTrace(from federation.Caller, omit *entry, method string, params any, messageID string, collect bool, copy *federation.TraceDestination) federation.Wait {
+func (d *directory) forwardLocalTrace(from federation.Caller, omit *entry, method string, params any, messageID string, collect bool, copy *federation.TraceDestination, completion bool) federation.Wait {
 	caller := from
 	caller.Groups = append([]string(nil), from.Groups...)
 	owned := make(chan struct{})
@@ -528,7 +528,7 @@ func (d *directory) forwardLocalTrace(from federation.Caller, omit *entry, metho
 	s.identity = &entry{row: row{SessionID: caller.SessionID, Name: caller.Name, Product: caller.Product,
 		Groups: append([]string(nil), caller.Groups...)}, peer: true, done: owned}
 	s.caller, s.omit, s.forwarded, s.messageID = &caller, omit, reply, messageID
-	s.traceCollect, s.traceCopy = collect, copy
+	s.traceCollect, s.traceCopy, s.completion = collect, copy, completion
 	s.dispatchRequest(protocol.Frame{ID: 1, Method: method, Request: true}, params)
 	return func(done <-chan struct{}) (federation.Reply, bool) {
 		defer s.releaseTraceTargets()

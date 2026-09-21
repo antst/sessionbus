@@ -21,7 +21,7 @@ func TestParentTraceOwnSendIsNotCopied(t *testing.T) {
 			for _, targets := range [][]string{{child}, {childName}, {child, "missing"}, {child, "other@local"}} {
 				var result protocol.MessageSendResult
 				must(t, parent.call("message.send", protocol.MessageSendRequest{Targets: targets, Message: "from parent"}, &result))
-				if len(result.Deliveries) != len(targets) || result.Deliveries[0].SessionID != child || result.Deliveries[0].Disposition != "injected" {
+				if len(result.Deliveries) != len(targets) || result.Deliveries[0].SessionID != child || (result.Deliveries[0].Disposition != "written" && result.Deliveries[0].Disposition != "injected") {
 					t.Fatal(result)
 				}
 				if len(targets) == 2 && targets[1] == "other@local" {
@@ -77,7 +77,7 @@ func TestParentTraceOwnSendDoesNotSuppressOtherParent(t *testing.T) {
 				t.Fatal(result)
 			}
 			for _, delivery := range result.Deliveries {
-				if delivery.Disposition != "injected" {
+				if delivery.Disposition != "written" && delivery.Disposition != "injected" {
 					t.Fatal(result)
 				}
 			}

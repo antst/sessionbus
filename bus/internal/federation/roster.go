@@ -26,12 +26,12 @@ func SupportsRoster(fd net.Conn) bool {
 		return false
 	}
 	protocol := connection.ConnectionState().NegotiatedProtocol
-	return protocol == TraceALPN || protocol == RosterALPN
+	return protocol == WakeALPN || protocol == TraceALPN || protocol == RosterALPN
 }
 
 func SupportsTrace(fd net.Conn) bool {
 	connection, ok := fd.(*tls.Conn)
-	return ok && connection.ConnectionState().NegotiatedProtocol == TraceALPN
+	return ok && (connection.ConnectionState().NegotiatedProtocol == WakeALPN || connection.ConnectionState().NegotiatedProtocol == TraceALPN)
 }
 
 func IsRoster(call IncomingCall) bool { return call.Request.Method == rosterMethod }

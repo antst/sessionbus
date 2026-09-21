@@ -367,7 +367,7 @@ func (d *Daemon) enqueueTrace(parent federation.Caller, body string) {
 		caller := federation.Caller{SessionID: d.traceSource, Name: "Sessionbus trace@" + d.host,
 			Product: "sessionbus", PrivateGroup: parent.PrivateGroup, Groups: []string{parent.PrivateGroup}}
 		copy := &federation.TraceDestination{SessionID: parent.SessionID, Lifetime: parent.OwnerLifetime}
-		wait := d.directory.forwardLocalTrace(caller, nil, "message.send", &protocol.MessageSendRequest{Target: parent.SessionID, Message: body}, "", false, copy)
+		wait := d.directory.forwardLocalTrace(caller, nil, "message.send", &protocol.MessageSendRequest{Target: parent.SessionID, Message: body}, "", false, copy, false)
 		reply, ok := wait(ctx.Done())
 		if !ok || reply.Error != nil {
 			d.dropTrace()

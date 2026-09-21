@@ -74,9 +74,9 @@ traffic, not recursive tracing of descendants or trace copies.
 A parent copy is a daemon-generated message sent through the existing message
 routing, delivery queue, federation and receipt paths. Do not introduce a
 `trace.event` transport, separate SDK event handler or trace delivery subsystem.
-The parent receives the copy according to its ordinary delivery policy. In
-particular, an idle-run parent may start a Run; a staging parent may receive a
-queued-for-next-turn receipt. Enabling tracing opts into that existing behavior.
+The parent receives the copy as an ordinary message. An idle parent must start
+work automatically; a native queue is permitted only if it drains automatically.
+Enabling tracing opts into that wake behavior.
 This supersedes the earlier proposal that tracing could never wake a parent.
 
 Give the copy its own message ID and an explicit daemon-generated trace marker,
@@ -236,7 +236,8 @@ Remote tracing controls/events follow authenticated federation routing and the
 live trace-owner relationship. Link loss may lose events; it must not establish
 fresh authority from a claimed owner_session_id. No remote trace query, backlog
 transfer or recovery protocol is introduced. Explicit tracing controls and copies
-require the negotiated `sessionbus-trace/1` federation capability. Updated hubs
+require the negotiated `sessionbus-trace/1` federation capability (also included
+in `sessionbus-wake/1`). Updated hubs
 report `unsupported_trace` when an involved link lacks it. This includes any
 explicit spawn `trace` field; omitting that field retains the old spawn shape.
 Ordinary messages still reach older hosts: optional eligibility collection is
@@ -320,8 +321,7 @@ outside Sessionbus or an interval it did not cover.
 - Bound memory, counts and queued lifetimes under saturation, stalled peers,
   late federated arrivals and shutdown. Drop trace work rather than spill to disk
   or block ordinary routing; join all trace work on shutdown.
-- Parent copies follow ordinary delivery policy, including idle-run or staging
-  behavior. Neither copies nor their receipts recursively generate copies, even
+- Parent copies follow mandatory idle-wake delivery behavior. Neither copies nor their receipts recursively generate copies, even
   when the parent itself is a traced child or the copy crosses hosts.
 - Original-send completion never waits for parent-copy delivery. A full or lost
   parent route cannot alter the original result or cause a retry.

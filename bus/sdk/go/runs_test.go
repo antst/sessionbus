@@ -17,10 +17,12 @@ import (
 )
 
 type cursorProduct struct {
-	close func()
-	open  func()
-	run   func(context.Context, *Run, RunInput) (TurnResult, error)
-	calls atomic.Int32
+	close   func()
+	open    func()
+	run     func(context.Context, *Run, RunInput) (TurnResult, error)
+	deliver func(context.Context, DeliveryRequest, *Run) (DeliveryReceipt, error)
+	ready   func(*rpc.Request, *rpc.Conn)
+	calls   atomic.Int32
 }
 
 func (*cursorProduct) Hello(context.Context) (HelloDescription, error) {
@@ -40,7 +42,10 @@ func (p *cursorProduct) Run(ctx context.Context, run *Run, input RunInput) (Turn
 	return TurnResult{Outcome: "completed", Result: "answer"}, nil
 }
 func (*cursorProduct) Interrupt(context.Context, *Run) error { return nil }
-func (*cursorProduct) Deliver(context.Context, DeliveryRequest, *Run) (DeliveryReceipt, error) {
+func (p *cursorProduct) Deliver(ctx context.Context, request DeliveryRequest, run *Run) (DeliveryReceipt, error) {
+	if p.deliver != nil {
+		return p.deliver(ctx, request, run)
+	}
 	return DeliveryReceipt{Disposition: "written"}, nil
 }
 func (p *cursorProduct) Close(context.Context, SessionCloseRequest) error {
@@ -65,7 +70,11 @@ func cursorWire(t *testing.T, p *cursorProduct, observe ...func(*rpc.Request)) (
 	server = rpc.New(right, false, func(_ context.Context, r *rpc.Request) {
 		go func() {
 			if r.Method == "turn.ready" {
-				_ = server.Result(r, struct{}{})
+				if p.ready != nil {
+					p.ready(r, server)
+				} else {
+					_ = server.Result(r, struct{}{})
+				}
 			}
 		}()
 	})

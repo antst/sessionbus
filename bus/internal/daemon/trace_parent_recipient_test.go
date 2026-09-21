@@ -155,7 +155,7 @@ func TestParentTraceFederatedSoleRecipient(t *testing.T) {
 		child := traceRemoteSpawn(t, parent, "beta", "child-"+mode, mode)
 		result := traceChildSend(t, daemons["beta"], child, protocol.MessageSendRequest{Target: "parent@alpha", Message: mode})
 		traceOriginal(t, parent, child, mode)
-		if len(result.Deliveries) != 1 || result.Deliveries[0].SessionID != "parent@alpha" || result.Deliveries[0].Disposition != "injected" {
+		if len(result.Deliveries) != 1 || result.Deliveries[0].SessionID != "parent@alpha" || (result.Deliveries[0].Disposition != "written" && result.Deliveries[0].Disposition != "injected") {
 			t.Fatal(result)
 		}
 		for _, d := range daemons {
@@ -186,7 +186,7 @@ func TestParentTraceSoleRecipientDoesNotSuppressOtherParent(t *testing.T) {
 	d.directory.entries[child].parent = d.directory.entries[parent].lifetime
 	d.directory.mu.Unlock()
 	result := traceChildSend(t, d, child, protocol.MessageSendRequest{Target: parent, Message: "to my parent"})
-	if len(result.Deliveries) != 1 || result.Deliveries[0].Disposition != "injected" {
+	if len(result.Deliveries) != 1 || (result.Deliveries[0].Disposition != "written" && result.Deliveries[0].Disposition != "injected") {
 		t.Fatal(result)
 	}
 	_, copy := traceReceive(t, grandparent)

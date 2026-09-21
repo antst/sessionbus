@@ -15,7 +15,7 @@ const closeBound = 10 * time.Second
 func (s *session) startLane(start *launch, helloFrame protocol.Frame, hello protocol.HelloDescription) {
 	s.launch, s.identity, s.owned = start, start.entry, 1
 	unsupportedField := unsupported(start.entry.row.Open, hello.SupportedOpenFields)
-	if !start.describe && start.entry.row.Policy.IdleMessage == "run" && !hello.SupportsMessageRun {
+	if !start.describe && !hello.SupportsMessageRun {
 		unsupportedField = "idle_message"
 	}
 	if start.describe || unsupportedField != "" {
@@ -113,6 +113,7 @@ func (s *session) finishOpen(frame protocol.Frame) {
 
 func (s *session) beginClose(request routedRequest) {
 	s.stopAutoClose()
+	s.settleDeferredDeliveries(protocol.Busy)
 	s.closeCall = &request
 	s.closeTimer = time.NewTimer(closeBound)
 	s.forget = request.params.(*protocol.SessionCloseRequest).Forget
